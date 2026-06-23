@@ -1,0 +1,14 @@
+[package]
+name = "rlay"
+version = "0.1.0"
+edition = "2024"
+
+
+[dependencies]
+
+[dev-dependencies]
+criterion = "0.8.2"
+
+[[bench]]
+name = "layout"
+harness = false
