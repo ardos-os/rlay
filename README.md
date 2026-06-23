@@ -7,13 +7,11 @@ It does not compile, link to, wrap, or otherwise depend on the original C
 implementation. The engine is implemented entirely in Rust while preserving
 Clay-compatible layout behavior.
 
+
+Rlay aims to provide a faithful reproduction of the original Clay's layout algorithms.
 It takes a tree of nodes and produces element bounds, ordered render commands,
 pointer hits, and persistent scroll state. Window creation, font loading, text
 measurement, and drawing remain the responsibility of the host application.
-
-Rlay aims to provide a faithful reproduction of the original Clay's layout algorithms,
-including intrinsic and minimum sizing, `FIT`/`GROW` compression, percentages,
-word wrapping, and wrapped-height propagation. 
 
 On top of that `rlay` adds Rust-native APIs, touchscreen multi touch support and touchscreen scrolling with momentum and overscroll, allowing you to easily have professional looking and natural scrolling that feels just right when scrolling with your finger without you having to write a single line of code.
 
@@ -32,6 +30,14 @@ Implemented features include:
 - Touch, wheel, and touchpad scrolling with momentum and overscroll
 - Floating elements attached to a parent, root, or element
 - Direct retained trees and an immediate-mode frame builder
+
+## Downsides
+
+The main downsides of `rlay` compared to clay is that it doesn't support `#[no_std]`, embedded environments and it doesn't use an arena allocator.
+
+Adding it from the start would add friction to the development of the library and I wouldn't really use `#[no_std]` support for my use case,
+so I prioritized it out. This may change in the future.
+
 
 ## Usage
 
