@@ -43,7 +43,7 @@ fn emits_commands_for_nested_layout_in_draw_order() {
             ..Layout::default()
         }));
 
-    let result = engine().layout(&root, Size::new(200.0, 80.0));
+    let result = engine().layout(&root, Size::new(200.0, 80.0), 0.0);
 
     assert_eq!(
         result.elements["root"].bounds,
@@ -97,7 +97,7 @@ fn emits_clip_start_and_end_around_children() {
         .child(Node::text("wide", TextStyle::default()).id("text"));
     root.clip_x = true;
 
-    let result = engine().layout(&root, Size::new(40.0, 24.0));
+    let result = engine().layout(&root, Size::new(40.0, 24.0), 0.0);
 
     assert!(matches!(
         result.commands[0],
@@ -129,7 +129,7 @@ fn hit_test_respects_clipped_bounds() {
     root.clip_x = true;
 
     let mut engine = engine();
-    let result = engine.layout(&root, Size::new(40.0, 20.0));
+    let result = engine.layout(&root, Size::new(40.0, 20.0), 0.0);
 
     assert_eq!(
         Engine::hit_test(&result, Point::new(20.0, 10.0)),
@@ -153,7 +153,7 @@ fn horizontal_clip_does_not_clip_vertical_hit_area() {
     root.clip_x = true;
 
     let mut engine = engine();
-    let result = engine.layout(&root, Size::new(20.0, 40.0));
+    let result = engine.layout(&root, Size::new(20.0, 40.0), 0.0);
 
     assert_eq!(
         Engine::hit_test(&result, Point::new(10.0, 60.0)),

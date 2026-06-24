@@ -42,12 +42,12 @@ fn fuzz_touch_scroll_offsets_stay_bounded_and_do_not_scale_by_finger_count() {
         let dy = rng.range(-30.0, 30.0);
         let mut one = engine();
         one.input_mut().set_touch(1, Point::new(10.0, 50.0), true);
-        one.layout(&root, Size::new(100.0, 100.0));
+        one.layout(&root, Size::new(100.0, 100.0), 0.0);
         one.input_mut()
             .set_touch(1, Point::new(10.0, 50.0 + dy), true);
-        one.layout(&root, Size::new(100.0, 100.0));
+        one.layout(&root, Size::new(100.0, 100.0), 0.0);
         let one_offset = one
-            .layout(&root, Size::new(100.0, 100.0))
+            .layout(&root, Size::new(100.0, 100.0), 0.0)
             .scroll_container("list")
             .unwrap()
             .offset;
@@ -55,14 +55,14 @@ fn fuzz_touch_scroll_offsets_stay_bounded_and_do_not_scale_by_finger_count() {
         let mut two = engine();
         two.input_mut().set_touch(1, Point::new(10.0, 50.0), true);
         two.input_mut().set_touch(2, Point::new(20.0, 50.0), true);
-        two.layout(&root, Size::new(100.0, 100.0));
+        two.layout(&root, Size::new(100.0, 100.0), 0.0);
         two.input_mut()
             .set_touch(1, Point::new(10.0, 50.0 + dy), true);
         two.input_mut()
             .set_touch(2, Point::new(20.0, 50.0 + dy), true);
-        two.layout(&root, Size::new(100.0, 100.0));
+        two.layout(&root, Size::new(100.0, 100.0), 0.0);
         let two_offset = two
-            .layout(&root, Size::new(100.0, 100.0))
+            .layout(&root, Size::new(100.0, 100.0), 0.0)
             .scroll_container("list")
             .unwrap()
             .offset;

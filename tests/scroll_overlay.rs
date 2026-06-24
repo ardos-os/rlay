@@ -32,7 +32,7 @@ fn scroll_container_offsets_children_and_reports_data() {
     let mut engine = engine();
     engine.set_scroll_offset("list", Vector::new(0.0, 20.0));
 
-    let result = engine.layout(&root, Size::new(100.0, 50.0));
+    let result = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(
         result.element("row1").unwrap().bounds,
@@ -74,7 +74,7 @@ fn scroll_container_content_size_includes_padding() {
             sizing: Sizing::fixed(100.0, 100.0),
             ..Layout::default()
         }));
-    let result = engine().layout(&root, Size::new(100.0, 80.0));
+    let result = engine().layout(&root, Size::new(100.0, 80.0), 0.0);
     let scroll = result.scroll_container("list").unwrap();
 
     assert_eq!(scroll.content_size, Size::new(100.0, 124.0));
@@ -111,7 +111,7 @@ fn culling_skips_offscreen_commands_but_keeps_element_data() {
     let mut engine = engine();
     engine.set_culling(true);
 
-    let result = engine.layout(&root, Size::new(10.0, 10.0));
+    let result = engine.layout(&root, Size::new(10.0, 10.0), 0.0);
 
     assert!(result.element("hidden").is_some());
     assert_eq!(result.commands.len(), 1);
@@ -131,7 +131,7 @@ fn overlay_wraps_child_commands() {
             }),
     );
 
-    let result = engine().layout(&root, Size::new(20.0, 20.0));
+    let result = engine().layout(&root, Size::new(20.0, 20.0), 0.0);
 
     assert!(
         matches!(result.commands[0].kind, CommandKind::OverlayStart(color) if color == overlay)
@@ -166,8 +166,8 @@ fn wheel_scroll_updates_next_frame_offset() {
         Some(rlay::TouchPhase::Moved),
     );
 
-    let first = engine.layout(&root, Size::new(100.0, 50.0));
-    let second = engine.layout(&root, Size::new(100.0, 50.0));
+    let first = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let second = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(first.scroll_container("list").unwrap().offset, Vector::ZERO);
     assert_eq!(
@@ -199,17 +199,17 @@ fn wheel_momentum_starts_after_wheel_phase_ends() {
         Some(rlay::TouchPhase::Moved),
     );
 
-    engine.layout(&root, Size::new(100.0, 50.0));
-    let active = engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let active = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     engine.input_mut().add_scroll_delta_with_phase(
         PointerId::Mouse,
         Vector::ZERO,
         Some(rlay::TouchPhase::Ended),
     );
-    let ended = engine.layout(&root, Size::new(100.0, 50.0));
-    engine.layout(&root, Size::new(100.0, 50.0));
-    let momentum = engine.layout(&root, Size::new(100.0, 50.0));
+    let ended = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let momentum = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(
         active.scroll_container("list").unwrap().offset,
@@ -246,16 +246,16 @@ fn wheel_started_resets_existing_momentum() {
         Some(rlay::TouchPhase::Started),
     );
 
-    engine.layout(&root, Size::new(100.0, 50.0));
-    let active = engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let active = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine.input_mut().add_scroll_delta_with_phase(
         PointerId::Mouse,
         Vector::ZERO,
         Some(rlay::TouchPhase::Ended),
     );
-    let ended = engine.layout(&root, Size::new(100.0, 50.0));
-    engine.layout(&root, Size::new(100.0, 50.0));
-    let momentum = engine.layout(&root, Size::new(100.0, 50.0));
+    let ended = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let momentum = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(
         active.scroll_container("list").unwrap().offset,
@@ -282,18 +282,18 @@ fn touch_drag_can_overscroll_past_top() {
             ..Layout::default()
         }));
     let mut engine = engine();
-    let previous = engine.layout(&root, Size::new(100.0, 50.0));
+    let previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 10.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 40.0), true);
     engine.apply_input_scroll(&previous);
 
-    let current = engine.layout(&root, Size::new(100.0, 50.0));
+    let current = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     let offset = current.scroll_container("list").unwrap().offset.y;
 
     assert_eq!(offset, -15.0);
@@ -314,19 +314,19 @@ fn touch_drag_tracks_finger_across_bottom_and_back() {
         }));
     let mut engine = engine();
     engine.set_scroll_offset("list", Vector::new(0.0, 30.0));
-    let mut previous = engine.layout(&root, Size::new(100.0, 50.0));
+    let mut previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 50.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     for (finger_y, expected_offset) in [(20.0, 55.0), (35.0, 45.0), (10.0, 60.0)] {
         engine
             .input_mut()
             .set_touch(1, Point::new(10.0, finger_y), true);
         engine.apply_input_scroll(&previous);
-        previous = engine.layout(&root, Size::new(100.0, 50.0));
+        previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
         assert_eq!(
             previous.scroll_container("list").unwrap().offset.y,
             expected_offset
@@ -348,34 +348,34 @@ fn touch_drag_can_grab_returning_overscroll_without_jumping() {
             ..Layout::default()
         }));
     let mut engine = engine();
-    let mut previous = engine.layout(&root, Size::new(100.0, 50.0));
+    let mut previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 10.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 40.0), true);
     engine.apply_input_scroll(&previous);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine.input_mut().remove_touch(1, Point::new(10.0, 40.0));
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     for _ in 0..2 {
-        engine.layout(&root, Size::new(100.0, 50.0));
+        engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     }
 
     engine
         .input_mut()
         .set_touch(2, Point::new(10.0, 40.0), true);
-    previous = engine.layout(&root, Size::new(100.0, 50.0));
+    previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     let before = previous.scroll_container("list").unwrap().offset.y;
     engine
         .input_mut()
         .set_touch(2, Point::new(10.0, 47.0), true);
     engine.apply_input_scroll(&previous);
     let after = engine
-        .layout(&root, Size::new(100.0, 50.0))
+        .layout(&root, Size::new(100.0, 50.0), 0.0)
         .scroll_container("list")
         .unwrap()
         .offset
@@ -407,8 +407,8 @@ fn touchpad_phase_can_overscroll_past_top() {
         Some(rlay::TouchPhase::Moved),
     );
 
-    engine.layout(&root, Size::new(100.0, 50.0));
-    let current = engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let current = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     let offset = current.scroll_container("list").unwrap().offset.y;
 
     assert_eq!(offset, -15.0);
@@ -437,12 +437,12 @@ fn touchpad_overscroll_stays_held_until_phase_ends() {
         Some(rlay::TouchPhase::Started),
     );
 
-    engine.layout(&root, Size::new(100.0, 50.0));
-    let held = engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let held = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     let held_y = held.scroll_container("list").unwrap().offset.y;
 
     for _ in 0..5 {
-        let frame = engine.layout(&root, Size::new(100.0, 50.0));
+        let frame = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
         assert_eq!(frame.scroll_container("list").unwrap().offset.y, held_y);
     }
 
@@ -451,17 +451,17 @@ fn touchpad_overscroll_stays_held_until_phase_ends() {
         Vector::ZERO,
         Some(rlay::TouchPhase::Ended),
     );
-    engine.layout(&root, Size::new(100.0, 50.0));
-    let first_released = engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let first_released = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     assert_eq!(
         first_released.scroll_container("list").unwrap().offset.y,
         held_y
     );
 
     for _ in 0..80 {
-        engine.layout(&root, Size::new(100.0, 50.0));
+        engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     }
-    let released = engine.layout(&root, Size::new(100.0, 50.0));
+    let released = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert!(released.scroll_container("list").unwrap().offset.y > held_y);
 }
@@ -484,7 +484,7 @@ fn touchpad_restart_during_overscroll_does_not_jump_back() {
     engine
         .input_mut()
         .set_mouse_position(Point::new(10.0, 10.0));
-    let mut previous = engine.layout(&root, Size::new(100.0, 50.0));
+    let mut previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     for (phase, physical_y) in [
         (rlay::TouchPhase::Started, -11.964_844),
@@ -507,11 +507,11 @@ fn touchpad_restart_during_overscroll_does_not_jump_back() {
             Some(phase),
         );
         engine.apply_input_scroll(&previous);
-        previous = engine.layout(&root, Size::new(100.0, 50.0));
+        previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     }
 
     for _ in 0..3 {
-        previous = engine.layout(&root, Size::new(100.0, 50.0));
+        previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     }
     let before_restart = previous.scroll_container("list").unwrap().offset.y;
 
@@ -521,7 +521,7 @@ fn touchpad_restart_during_overscroll_does_not_jump_back() {
         Some(rlay::TouchPhase::Started),
     );
     engine.apply_input_scroll(&previous);
-    let restarted = engine.layout(&root, Size::new(100.0, 50.0));
+    let restarted = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert!(restarted.scroll_container("list").unwrap().offset.y >= before_restart);
 }
@@ -543,14 +543,14 @@ fn scroll_momentum_overshoots_then_springs_back() {
     engine.set_scroll_offset("list", Vector::new(0.0, 45.0));
     engine.set_scroll_momentum("list", Vector::new(0.0, 20.0));
 
-    engine.layout(&root, Size::new(100.0, 50.0));
-    let overshot = engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let overshot = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     let overshot_y = overshot.scroll_container("list").unwrap().offset.y;
 
     for _ in 0..160 {
-        engine.layout(&root, Size::new(100.0, 50.0));
+        engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     }
-    let settled = engine.layout(&root, Size::new(100.0, 50.0));
+    let settled = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert!(overshot_y > 50.0);
     assert_eq!(
@@ -576,8 +576,8 @@ fn overscroll_velocity_accelerates_towards_distance_target() {
     engine.set_scroll_offset("list", Vector::new(0.0, -100.0));
     engine.set_scroll_momentum("list", Vector::new(0.0, 5.0));
 
-    let before = engine.layout(&root, Size::new(100.0, 50.0));
-    let after = engine.layout(&root, Size::new(100.0, 50.0));
+    let before = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let after = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     let moved = after.scroll_container("list").unwrap().offset.y
         - before.scroll_container("list").unwrap().offset.y;
 
@@ -602,8 +602,8 @@ fn overscroll_damps_extreme_inertia_without_stopping_immediately() {
     engine.set_scroll_offset("list", Vector::new(0.0, -20.0));
     engine.set_scroll_momentum("list", Vector::new(0.0, -100.0));
 
-    let before = engine.layout(&root, Size::new(100.0, 50.0));
-    let after = engine.layout(&root, Size::new(100.0, 50.0));
+    let before = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let after = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     let moved = after.scroll_container("list").unwrap().offset.y
         - before.scroll_container("list").unwrap().offset.y;
 
@@ -628,13 +628,13 @@ fn touch_drag_scrolls_content_on_next_frame() {
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 30.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 10.0), true);
 
-    let before = engine.layout(&root, Size::new(100.0, 50.0));
-    let after = engine.layout(&root, Size::new(100.0, 50.0));
+    let before = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let after = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(
         before.scroll_container("list").unwrap().offset,
@@ -663,13 +663,13 @@ fn mouse_drag_does_not_scroll_content() {
     engine
         .input_mut()
         .set_mouse_down(Point::new(10.0, 30.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine
         .input_mut()
         .set_mouse_down(Point::new(10.0, 10.0), true);
 
-    engine.layout(&root, Size::new(100.0, 50.0));
-    let after = engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let after = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(after.scroll_container("list").unwrap().offset, Vector::ZERO);
 }
@@ -688,18 +688,18 @@ fn touch_drag_can_update_scroll_before_current_layout() {
             ..Layout::default()
         }));
     let mut engine = engine();
-    let previous = engine.layout(&root, Size::new(100.0, 50.0));
+    let previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 30.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 10.0), true);
 
     engine.apply_input_scroll(&previous);
-    let current = engine.layout(&root, Size::new(100.0, 50.0));
+    let current = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(
         current.scroll_container("list").unwrap().offset,
@@ -721,18 +721,18 @@ fn touch_scroll_applies_full_drag_when_gesture_wins() {
             ..Layout::default()
         }));
     let mut engine = engine();
-    let previous = engine.layout(&root, Size::new(100.0, 50.0));
+    let previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 30.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 23.0), true);
 
     engine.apply_input_scroll(&previous);
-    let current = engine.layout(&root, Size::new(100.0, 50.0));
+    let current = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(
         current.scroll_container("list").unwrap().offset,
@@ -754,18 +754,18 @@ fn vertical_touch_scroll_ignores_horizontal_drag_slop() {
             ..Layout::default()
         }));
     let mut engine = engine();
-    let previous = engine.layout(&root, Size::new(100.0, 50.0));
+    let previous = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 30.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine
         .input_mut()
         .set_touch(1, Point::new(30.0, 32.0), true);
 
     engine.apply_input_scroll(&previous);
-    let current = engine.layout(&root, Size::new(100.0, 50.0));
+    let current = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(
         current.scroll_container("list").unwrap().offset,
@@ -787,18 +787,18 @@ fn horizontal_touch_scroll_ignores_vertical_drag_slop() {
             ..Layout::default()
         }));
     let mut engine = engine();
-    let previous = engine.layout(&root, Size::new(50.0, 100.0));
+    let previous = engine.layout(&root, Size::new(50.0, 100.0), 0.0);
 
     engine
         .input_mut()
         .set_touch(1, Point::new(30.0, 10.0), true);
-    engine.layout(&root, Size::new(50.0, 100.0));
+    engine.layout(&root, Size::new(50.0, 100.0), 0.0);
     engine
         .input_mut()
         .set_touch(1, Point::new(32.0, 30.0), true);
 
     engine.apply_input_scroll(&previous);
-    let current = engine.layout(&root, Size::new(50.0, 100.0));
+    let current = engine.layout(&root, Size::new(50.0, 100.0), 0.0);
 
     assert_eq!(
         current.scroll_container("list").unwrap().offset,
@@ -826,14 +826,14 @@ fn two_finger_drag_does_not_scroll_twice_as_fast() {
     engine
         .input_mut()
         .set_touch(2, Point::new(20.0, 30.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 10.0), true);
     engine.input_mut().set_touch(2, Point::new(20.0, 0.0), true);
 
-    engine.layout(&root, Size::new(100.0, 50.0));
-    let after = engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let after = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(
         after.scroll_container("list").unwrap().offset,
@@ -858,15 +858,15 @@ fn touch_scroll_momentum_continues_after_release() {
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 80.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine
         .input_mut()
         .set_touch(1, Point::new(10.0, 40.0), true);
-    engine.layout(&root, Size::new(100.0, 50.0));
+    engine.layout(&root, Size::new(100.0, 50.0), 0.0);
     engine.input_mut().remove_touch(1, Point::new(10.0, 40.0));
 
-    let before_momentum = engine.layout(&root, Size::new(100.0, 50.0));
-    let after_momentum = engine.layout(&root, Size::new(100.0, 50.0));
+    let before_momentum = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
+    let after_momentum = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert!(
         after_momentum.scroll_container("list").unwrap().offset.y

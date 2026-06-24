@@ -88,7 +88,7 @@ let root = Node::new()
             }),
     );
 
-let result = engine.layout(&root, Size::new(320.0, 200.0));
+let result = engine.layout(&root, Size::new(320.0, 200.0), 0.0);
 
 for command in &result.commands {
     // Translate each command into calls to your renderer.
@@ -104,7 +104,7 @@ A typical frame consists of:
 
 1. Updating mouse, touch, or wheel state through `engine.input_mut()`.
 2. Building the `Node` tree.
-3. Calling `engine.layout(&root, viewport_size)`.
+3. Calling `engine.layout(&root, viewport_size, delta_time_seconds)`.
 4. Drawing `result.commands` in order.
 5. Reading element, pointer, and scroll queries from the result.
 
@@ -112,6 +112,25 @@ For event-driven applications, `Engine::apply_input_scroll` can update scroll
 state from an existing layout before the next layout pass.
 
 If you have multiple outputs (windows, monitors, etc...), you must create and manage a different Engine per root.
+
+## Transitions
+
+Attach transitions to nodes with stable ids:
+
+```rust
+use rlay::{Node, Transition, TransitionProperties};
+
+let panel = Node::new()
+    .id("panel")
+    .transition(Transition::ease_out(
+        0.2,
+        TransitionProperties::BOUNDS | TransitionProperties::BACKGROUND_COLOR,
+    ));
+```
+
+Pass frame time in seconds to `Engine::layout` or `Frame::end`. Negative and
+non-finite values count as zero. Invalid transition declarations are reported
+through `LayoutResult::errors`.
 
 ## Rendering
 
@@ -123,6 +142,15 @@ Text measurement must use the same fonts and logical-pixel scale as rendering.
 Call `Engine::reset_measure_text_cache` after changing fonts or DPI scale.
 
 ## Development
+
+Run the interactive transitions example:
+
+```sh
+cargo run --example transitions
+```
+
+It mirrors Clay's `raylib-transitions` demo: randomise, recolor, add and remove
+animated boxes in a responsive 5×6 grid.
 
 ```sh
 cargo test

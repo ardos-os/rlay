@@ -39,7 +39,7 @@ fn clay_like_row_fixture_matches_expected_commands() {
                 }),
         );
 
-    let commands = engine().layout(&root, Size::new(40.0, 16.0)).commands;
+    let commands = engine().layout(&root, Size::new(40.0, 16.0), 0.0).commands;
 
     assert_eq!(
         commands,
@@ -87,7 +87,7 @@ fn clay_like_floating_fixture_matches_expected_bounds() {
             }),
     );
 
-    let result = engine().layout(&root, Size::new(100.0, 80.0));
+    let result = engine().layout(&root, Size::new(100.0, 80.0), 0.0);
 
     assert_eq!(
         result.element("float").unwrap().bounds,
@@ -111,7 +111,7 @@ fn clay_like_scroll_fixture_matches_expected_offset_bounds() {
     let mut engine = engine();
     engine.set_scroll_offset("scroll", Vector::new(0.0, 12.0));
 
-    let result = engine.layout(&root, Size::new(20.0, 20.0));
+    let result = engine.layout(&root, Size::new(20.0, 20.0), 0.0);
 
     assert_eq!(
         result.element("row").unwrap().bounds,

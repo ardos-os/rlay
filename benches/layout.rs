@@ -35,7 +35,8 @@ fn bench_large_list(c: &mut Criterion) {
         b.iter_batched(
             engine,
             |mut engine| {
-                let result = engine.layout(black_box(&root), black_box(Size::new(400.0, 800.0)));
+                let result =
+                    engine.layout(black_box(&root), black_box(Size::new(400.0, 800.0)), 0.0);
                 black_box(result.commands.len())
             },
             criterion::BatchSize::SmallInput,

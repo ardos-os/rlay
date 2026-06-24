@@ -1,4 +1,4 @@
-use crate::geometry::{Color, Padding, Point, Rect, Size};
+use crate::geometry::{Point, Size};
 use crate::style::{Direction, TextStyle};
 
 pub(crate) fn main_axis(size: Size, direction: Direction) -> f32 {
@@ -33,32 +33,6 @@ impl TextSelection {
             std::cmp::Ordering::Equal => None,
         }
     }
-}
-
-/// Paint and geometry values captured for transitions.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct TransitionValues {
-    /// Element bounds.
-    pub bounds: Rect,
-    /// Background color.
-    pub background: Color,
-    /// Overlay color.
-    pub overlay: Color,
-    /// Border color.
-    pub border_color: Color,
-    /// Border widths.
-    pub border_width: Padding,
-}
-
-/// Quadratic ease-out interpolation.
-#[must_use]
-pub fn ease_out(from: f32, to: f32, elapsed: f32, duration: f32) -> f32 {
-    if duration <= 0.0 {
-        return to;
-    }
-    let t = (elapsed / duration).clamp(0.0, 1.0);
-    let eased = 1.0 - (1.0 - t) * (1.0 - t);
-    from + (to - from) * eased
 }
 
 pub(crate) fn midpoint(a: Point, b: Point) -> Point {

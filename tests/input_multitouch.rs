@@ -35,7 +35,7 @@ fn layout_result_reports_independent_touch_targets() {
     engine
         .input_mut()
         .set_touch(20, Point::new(125.0, 25.0), true);
-    let result = engine.layout(&root, Size::new(200.0, 100.0));
+    let result = engine.layout(&root, Size::new(200.0, 100.0), 0.0);
 
     assert!(result.pointers.contains(&PointerHit {
         pointer_id: PointerId::Touch(10),
@@ -72,7 +72,7 @@ fn captured_pointer_keeps_target_when_dragging_outside() {
         .input_mut()
         .set_touch(1, Point::new(90.0, 90.0), true);
 
-    let result = engine.layout(&root, Size::new(100.0, 100.0));
+    let result = engine.layout(&root, Size::new(100.0, 100.0), 0.0);
 
     assert_eq!(result.pointers[0].element_id.as_deref(), Some("slider"));
 }
@@ -82,7 +82,7 @@ fn pinch_reports_center_and_scale() {
     let mut engine = engine();
     engine.input_mut().set_touch(1, Point::new(0.0, 0.0), true);
     engine.input_mut().set_touch(2, Point::new(10.0, 0.0), true);
-    engine.layout(&Node::new(), Size::new(100.0, 100.0));
+    engine.layout(&Node::new(), Size::new(100.0, 100.0), 0.0);
     engine.input_mut().set_touch(1, Point::new(-5.0, 0.0), true);
     engine.input_mut().set_touch(2, Point::new(15.0, 0.0), true);
 

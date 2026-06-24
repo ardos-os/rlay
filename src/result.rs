@@ -14,7 +14,8 @@ pub enum CommandKind {
     Text {
         /// Text contents.
         text: String,
-        /// Text style.
+        /// Text style. Command bounds describe the line box; renderers must
+        /// derive the glyph baseline from their font metrics.
         style: TextStyle,
     },
     /// Draw an application-owned image.

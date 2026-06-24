@@ -9,7 +9,8 @@ use crate::style::TextStyle;
 /// Immediate-mode frame builder.
 ///
 /// A frame starts with an implicit root node sized to the viewport. Open nodes,
-/// push children, close nodes, then call [`Frame::end`] to run layout.
+/// push children, close nodes, then call [`Frame::end`] with delta time in
+/// seconds to run layout.
 pub struct Frame<'a> {
     pub(crate) engine: &'a mut Engine,
     pub(crate) size: Size,
@@ -66,16 +67,18 @@ impl Frame<'_> {
 
     /// Finishes the frame and returns layout output.
     ///
+    /// Negative and non-finite delta times are treated as zero.
+    ///
     /// # Errors
     ///
     /// Returns [`LayoutError::UnclosedElements`] when one or more nodes are
     /// still open.
-    pub fn end(mut self) -> Result<LayoutResult, LayoutError> {
+    pub fn end(mut self, delta_time: f32) -> Result<LayoutResult, LayoutError> {
         if self.stack.len() != 1 {
             return Err(LayoutError::UnclosedElements);
         }
         if let Some(root) = self.stack.pop() {
-            Ok(self.engine.layout(&root, self.size))
+            Ok(self.engine.layout(&root, self.size, delta_time))
         } else {
             Err(LayoutError::UnclosedElements)
         }

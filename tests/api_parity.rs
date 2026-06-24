@@ -52,7 +52,7 @@ fn immediate_mode_frame_builds_nested_layout() {
         ..Layout::default()
     }));
     frame.close().unwrap();
-    let result = frame.end().unwrap();
+    let result = frame.end(0.0).unwrap();
 
     assert_eq!(
         result.element("child").unwrap().bounds,
@@ -67,7 +67,7 @@ fn immediate_mode_reports_unbalanced_frames() {
 
     frame.open(Node::new().id("open"));
 
-    assert_eq!(frame.end().unwrap_err(), LayoutError::UnclosedElements);
+    assert_eq!(frame.end(0.0).unwrap_err(), LayoutError::UnclosedElements);
 }
 
 #[test]
@@ -77,7 +77,7 @@ fn image_node_emits_image_command() {
         ..Layout::default()
     });
 
-    let result = engine().layout(&root, Size::new(30.0, 20.0));
+    let result = engine().layout(&root, Size::new(30.0, 20.0), 0.0);
 
     assert_eq!(
         result.commands,
@@ -99,7 +99,7 @@ fn aspect_ratio_derives_fit_axis_from_fixed_axis() {
         ..Layout::default()
     }));
 
-    let result = engine().layout(&root, Size::new(100.0, 100.0));
+    let result = engine().layout(&root, Size::new(100.0, 100.0), 0.0);
 
     assert_eq!(
         result.element("poster").unwrap().bounds,
@@ -126,7 +126,7 @@ fn text_wraps_words_and_aligns_lines() {
             ..Layout::default()
         });
 
-    let result = engine().layout(&root, Size::new(50.0, 100.0));
+    let result = engine().layout(&root, Size::new(50.0, 100.0), 0.0);
 
     assert_eq!(
         result.commands,
@@ -172,7 +172,7 @@ fn row_compresses_fit_content_so_text_wraps() {
             ..Layout::default()
         }));
 
-    let result = engine().layout(&root, Size::new(100.0, 100.0));
+    let result = engine().layout(&root, Size::new(100.0, 100.0), 0.0);
 
     assert_eq!(result.element("fit").unwrap().bounds.width, 60.0);
     assert_eq!(result.element("fit").unwrap().bounds.height, 30.0);
@@ -204,7 +204,7 @@ fn nested_fit_container_propagates_wrapped_text_height() {
             ..Layout::default()
         }));
 
-    let result = engine().layout(&root, Size::new(100.0, 100.0));
+    let result = engine().layout(&root, Size::new(100.0, 100.0), 0.0);
 
     assert_eq!(
         result.element("fit").unwrap().bounds,
@@ -222,7 +222,7 @@ fn word_wrap_preserves_the_largest_word_minimum() {
     };
     let root = Node::new().child(Node::text("abcdefghij x", style).id("text"));
 
-    let result = engine().layout(&root, Size::new(50.0, 100.0));
+    let result = engine().layout(&root, Size::new(50.0, 100.0), 0.0);
 
     assert_eq!(
         result.element("text").unwrap().bounds,
@@ -254,7 +254,7 @@ fn row_percent_sizing_excludes_child_gaps() {
             ..Layout::default()
         }));
 
-    let result = engine().layout(&root, Size::new(100.0, 20.0));
+    let result = engine().layout(&root, Size::new(100.0, 20.0), 0.0);
 
     assert_eq!(result.element("percent").unwrap().bounds.width, 45.0);
     assert_eq!(
@@ -270,7 +270,7 @@ fn stable_ids_are_repeatable_and_can_be_attached_to_nodes() {
     let other = ElementId::indexed("item", 3);
     let root = Node::new().element_id(id.clone());
 
-    let result = engine().layout(&root, Size::new(10.0, 10.0));
+    let result = engine().layout(&root, Size::new(10.0, 10.0), 0.0);
 
     assert_eq!(id.hash, same.hash);
     assert_ne!(id.hash, other.hash);

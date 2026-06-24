@@ -7,11 +7,15 @@ use crate::result::{
 };
 use crate::scroll::ScrollState;
 use crate::style::{
-    AlignX, AlignY, AttachTo, AxisSize, Direction, Layout, PointerCapture, Sizing, TextAlign,
-    TextStyle, TextWrap,
+    AlignX, AlignY, Anchor, AttachTo, AxisSize, Direction, Floating, Layout, PointerCapture,
+    Sizing, TextAlign, TextStyle, TextWrap,
 };
-use crate::text::{TextSelection, char_index_to_byte, ease_out, main_axis, resolved_line_height};
-use std::collections::HashMap;
+use crate::text::{TextSelection, char_index_to_byte, main_axis, resolved_line_height};
+use crate::transition::{
+    Transition, TransitionArgs, TransitionExitOrdering, TransitionExitTrigger,
+    TransitionInteraction, TransitionProperties, TransitionState, TransitionValues,
+};
+use std::collections::{HashMap, HashSet};
 
 /// Text measurement callback used by the layout engine.
 ///
@@ -29,8 +33,12 @@ pub struct Engine {
     measure_cache: HashMap<TextMeasureKey, Size>,
     input: InputState,
     scroll: ScrollState,
-    transitions: HashMap<String, Rect>,
-    exiting_commands: HashMap<String, Vec<RenderCommand>>,
+    transition_runtime: HashMap<u32, TransitionRuntime>,
+    transition_bounds: HashMap<String, Rect>,
+    transition_non_interactive: HashSet<String>,
+    transition_exiting: HashSet<String>,
+    previous_tree_ids: HashSet<String>,
+    previous_viewport: Option<Size>,
     culling: bool,
     debug: bool,
     max_elements: Option<usize>,
@@ -54,6 +62,33 @@ struct IntrinsicSize {
     minimum: Size,
 }
 
+#[derive(Clone)]
+struct TransitionRuntime {
+    config: Transition,
+    state: TransitionState,
+    initial: TransitionValues,
+    current: TransitionValues,
+    target: TransitionValues,
+    elapsed: f32,
+    active: TransitionProperties,
+    parent: String,
+    sibling_index: usize,
+    relative: Point,
+    snapshot: Node,
+    exit_complete: bool,
+    reparented: bool,
+}
+
+#[derive(Clone)]
+struct TransitionNode {
+    hash: u32,
+    key: String,
+    parent: String,
+    sibling_index: usize,
+    config: Transition,
+    snapshot: Node,
+}
+
 /// Recoverable errors reported in [`LayoutResult`](crate::LayoutResult).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutError {
@@ -67,6 +102,14 @@ pub enum LayoutError {
     CommandsCapacityExceeded,
     /// The configured text measurement cache capacity was exceeded.
     TextMeasurementCapacityExceeded,
+    /// A node with a transition did not have a stable public id.
+    TransitionMissingId,
+    /// More than one node used the same stable id hash.
+    DuplicateElementId(u32),
+    /// Text nodes cannot use element transitions.
+    TextTransitionUnsupported,
+    /// A public id used an internal `__rlay_` prefix.
+    ReservedElementId(String),
 }
 
 impl Engine {
@@ -77,8 +120,12 @@ impl Engine {
             measure_cache: HashMap::new(),
             input: InputState::default(),
             scroll: ScrollState::default(),
-            transitions: HashMap::new(),
-            exiting_commands: HashMap::new(),
+            transition_runtime: HashMap::new(),
+            transition_bounds: HashMap::new(),
+            transition_non_interactive: HashSet::new(),
+            transition_exiting: HashSet::new(),
+            previous_tree_ids: HashSet::new(),
+            previous_viewport: None,
             culling: false,
             debug: false,
             max_elements: None,
@@ -139,40 +186,6 @@ impl Engine {
         self.scroll.set_momentum(id, velocity);
     }
 
-    /// Overrides the bounds used for an element id in the next layout pass.
-    pub fn set_transition_bounds(&mut self, id: impl Into<String>, bounds: Rect) {
-        self.transitions.insert(id.into(), bounds);
-    }
-
-    /// Computes eased bounds and stores them as a transition override.
-    pub fn transition_bounds(
-        &mut self,
-        id: impl Into<String>,
-        from: Rect,
-        to: Rect,
-        elapsed: f32,
-        duration: f32,
-    ) {
-        self.transitions.insert(
-            id.into(),
-            Rect::new(
-                ease_out(from.x, to.x, elapsed, duration),
-                ease_out(from.y, to.y, elapsed, duration),
-                ease_out(from.width, to.width, elapsed, duration),
-                ease_out(from.height, to.height, elapsed, duration),
-            ),
-        );
-    }
-
-    /// Stores commands to emit when an element disappears.
-    pub fn transition_exit_commands(
-        &mut self,
-        id: impl Into<String>,
-        commands: Vec<RenderCommand>,
-    ) {
-        self.exiting_commands.insert(id.into(), commands);
-    }
-
     /// Sets an external scroll query callback.
     pub fn set_query_scroll_offset(&mut self, query: impl Fn(&str) -> Vector + 'static) {
         self.scroll.set_query_offset(query);
@@ -216,10 +229,255 @@ impl Engine {
     }
 
     /// Lays out a retained [`Node`] tree.
-    pub fn layout(&mut self, root: &Node, size: Size) -> LayoutResult {
+    ///
+    /// `delta_time` is elapsed frame time in seconds. Negative and non-finite
+    /// values are treated as zero.
+    #[allow(clippy::too_many_lines)]
+    pub fn layout(&mut self, root: &Node, size: Size, delta_time: f32) -> LayoutResult {
+        let delta_time = if delta_time.is_finite() && delta_time > 0.0 {
+            delta_time
+        } else {
+            0.0
+        };
+        self.transition_runtime
+            .retain(|_, runtime| !runtime.exit_complete);
+        self.transition_bounds.clear();
+        self.transition_non_interactive.clear();
+        self.transition_exiting.clear();
+
+        let mut errors = Vec::new();
+        let mut tree = root.clone();
+        let mut transition_nodes = Vec::new();
+        let mut current_hashes = HashSet::new();
+        normalize_tree(
+            &mut tree,
+            "__rlay_root",
+            &mut transition_nodes,
+            &mut current_hashes,
+            &mut errors,
+        );
+        let current_transition_hashes: HashSet<_> =
+            transition_nodes.iter().map(|node| node.hash).collect();
+        let mut current_tree_ids = HashSet::new();
+        collect_node_ids(&tree, &mut current_tree_ids);
+        self.transition_runtime.retain(|hash, runtime| {
+            current_transition_hashes.contains(hash)
+                || (!current_hashes.contains(hash)
+                    && (runtime.state == TransitionState::Exiting
+                        || (runtime.config.exit.target.is_some()
+                            && (runtime.config.exit.trigger
+                                == TransitionExitTrigger::WhenParentExits
+                                || current_tree_ids.contains(&runtime.parent)))))
+        });
+
+        let mut disappearing: Vec<_> = self
+            .transition_runtime
+            .iter()
+            .filter(|(hash, runtime)| {
+                !current_hashes.contains(hash)
+                    && runtime.config.exit.target.is_some()
+                    && (runtime.config.exit.trigger == TransitionExitTrigger::WhenParentExits
+                        || current_tree_ids.contains(&runtime.parent))
+            })
+            .map(|(hash, _)| *hash)
+            .collect();
+        let nested: Vec<_> = disappearing
+            .iter()
+            .copied()
+            .filter(|hash| {
+                disappearing.iter().any(|ancestor| {
+                    ancestor != hash
+                        && self
+                            .transition_runtime
+                            .get(ancestor)
+                            .is_some_and(|runtime| node_contains_hash(&runtime.snapshot, *hash))
+                })
+            })
+            .collect();
+        disappearing.retain(|hash| !nested.contains(hash));
+        for hash in nested {
+            self.transition_runtime.remove(&hash);
+        }
+        for hash in disappearing {
+            if let Some(runtime) = self.transition_runtime.get_mut(&hash) {
+                if runtime.state != TransitionState::Exiting {
+                    let Some(exit_target) = runtime.config.exit.target else {
+                        continue;
+                    };
+                    runtime.state = TransitionState::Exiting;
+                    runtime.initial = runtime.current;
+                    runtime.target = exit_target(runtime.current, runtime.config.properties);
+                    runtime.active = runtime.config.properties;
+                    runtime.elapsed = 0.0;
+                }
+                let mut snapshot = runtime.snapshot.clone();
+                remove_present_descendants(&mut snapshot, &current_hashes);
+                snapshot.layout.sizing =
+                    Sizing::fixed(runtime.current.bounds.width, runtime.current.bounds.height);
+                if let Some(id) = &snapshot.id {
+                    self.transition_exiting.insert(id.clone());
+                }
+                insert_exit(&mut tree, snapshot, runtime);
+                collect_node_ids(&runtime.snapshot, &mut self.transition_non_interactive);
+            }
+        }
+
+        let target_result = self.layout_pass(&tree, size);
+        let viewport_changed = self.previous_viewport.is_some_and(|old| old != size);
+        let appeared_ids: HashSet<_> = target_result
+            .elements
+            .keys()
+            .filter(|id| !self.previous_tree_ids.contains(*id))
+            .cloned()
+            .collect();
+
+        for info in &transition_nodes {
+            let Some(element) = target_result.elements.get(&info.key) else {
+                continue;
+            };
+            let Some(node) = find_node(&tree, &info.key) else {
+                continue;
+            };
+            let target = values(node, element.bounds);
+            let parent_bounds = target_result
+                .elements
+                .get(&info.parent)
+                .map_or(Rect::default(), |parent| parent.bounds);
+            let parent_scroll = target_result
+                .scroll_containers
+                .get(&info.parent)
+                .map_or(Vector::ZERO, |scroll| scroll.offset);
+            let relative = Point::new(
+                target.bounds.x - parent_bounds.x + parent_scroll.x,
+                target.bounds.y - parent_bounds.y + parent_scroll.y,
+            );
+            let parent_appeared = appeared_ids.contains(&info.parent);
+
+            if let Some(runtime) = self.transition_runtime.get_mut(&info.hash) {
+                let reparented = runtime.parent != info.parent;
+                let was_exiting = runtime.state == TransitionState::Exiting;
+                let changed = changed_properties(
+                    runtime.target,
+                    target,
+                    info.config.properties,
+                    runtime.relative,
+                    relative,
+                    reparented,
+                    viewport_changed,
+                );
+                runtime.config = info.config;
+                runtime.parent.clone_from(&info.parent);
+                runtime.reparented = reparented;
+                runtime.sibling_index = info.sibling_index;
+                runtime.relative = relative;
+                runtime.snapshot = info.snapshot.clone();
+                sync_unselected(&mut runtime.current, target, info.config.properties);
+                runtime.target = target;
+                if was_exiting || !changed.is_empty() {
+                    runtime.state = TransitionState::Transitioning;
+                    runtime.initial = runtime.current;
+                    runtime.active = if was_exiting {
+                        info.config.properties
+                    } else {
+                        runtime.active | changed
+                    };
+                    runtime.elapsed = 0.0;
+                    runtime.exit_complete = false;
+                }
+            } else {
+                let should_enter = info.config.enter.initial.is_some()
+                    && (!parent_appeared
+                        || info.config.enter.trigger
+                            == crate::transition::TransitionEnterTrigger::OnFirstParentFrame);
+                let current = if should_enter {
+                    info.config
+                        .enter
+                        .initial
+                        .map_or(target, |initial| initial(target, info.config.properties))
+                } else {
+                    target
+                };
+                self.transition_runtime.insert(
+                    info.hash,
+                    TransitionRuntime {
+                        config: info.config,
+                        state: if should_enter {
+                            TransitionState::Entering
+                        } else {
+                            TransitionState::Idle
+                        },
+                        initial: current,
+                        current,
+                        target,
+                        elapsed: 0.0,
+                        active: if should_enter {
+                            info.config.properties
+                        } else {
+                            TransitionProperties::empty()
+                        },
+                        parent: info.parent.clone(),
+                        sibling_index: info.sibling_index,
+                        relative,
+                        snapshot: info.snapshot.clone(),
+                        exit_complete: false,
+                        reparented: false,
+                    },
+                );
+            }
+        }
+
+        for runtime in self.transition_runtime.values_mut() {
+            if runtime.state != TransitionState::Idle
+                && !(runtime.state == TransitionState::Entering && runtime.elapsed == 0.0)
+            {
+                let frame = (runtime.config.handler)(TransitionArgs {
+                    state: runtime.state,
+                    initial: runtime.initial,
+                    current: runtime.current,
+                    target: runtime.target,
+                    elapsed: runtime.elapsed,
+                    duration: runtime.config.duration,
+                    properties: runtime.active,
+                });
+                runtime.current = frame.values;
+                if frame.complete {
+                    if runtime.state == TransitionState::Exiting {
+                        runtime.exit_complete = true;
+                    } else {
+                        runtime.state = TransitionState::Idle;
+                        runtime.current = runtime.target;
+                        runtime.active = TransitionProperties::empty();
+                    }
+                }
+            }
+            if runtime.state != TransitionState::Idle {
+                runtime.elapsed += delta_time;
+            }
+        }
+
+        apply_transition_values(
+            &mut tree,
+            &self.transition_runtime,
+            &mut self.transition_bounds,
+            &mut self.transition_non_interactive,
+        );
+        let mut result = self.layout_pass(&tree, size);
+        strip_internal_ids(&mut result);
+        result.errors.extend(errors);
+        self.finish_layout(&mut result, size);
+        self.previous_tree_ids = target_result.elements.keys().cloned().collect();
+        self.previous_viewport = Some(size);
+        result
+    }
+
+    fn layout_pass(&mut self, root: &Node, size: Size) -> LayoutResult {
         let mut result = LayoutResult::default();
         let root_bounds = Rect::new(0.0, 0.0, size.width, size.height);
         self.layout_node(root, root_bounds, root_bounds, &mut result);
+        result
+    }
+
+    fn finish_layout(&mut self, result: &mut LayoutResult, size: Size) {
         if self
             .max_elements
             .is_some_and(|max_elements| result.elements.len() > max_elements)
@@ -238,11 +496,7 @@ impl Engine {
                 .push(LayoutError::TextMeasurementCapacityExceeded);
             self.measure_cache_exceeded = false;
         }
-        for (id, commands) in &self.exiting_commands {
-            if !result.elements.contains_key(id) {
-                result.commands.extend(commands.iter().cloned());
-            }
-        }
+        let root_bounds = Rect::new(0.0, 0.0, size.width, size.height);
         result.pointers = self
             .input
             .pointers()
@@ -254,12 +508,12 @@ impl Engine {
                     .input
                     .pointer_capture(pointer.id)
                     .map(str::to_owned)
-                    .or_else(|| Engine::hit_test(&result, pointer.position).map(str::to_owned)),
+                    .or_else(|| Engine::hit_test(result, pointer.position).map(str::to_owned)),
                 mouse_button: pointer.mouse_button,
                 gesture: pointer.gesture,
             })
             .collect();
-        self.scroll.finish_layout_frame(&mut self.input, &result);
+        self.scroll.finish_layout_frame(&mut self.input, result);
         self.input.end_frame();
         if self.debug {
             result.commands.push(RenderCommand {
@@ -295,7 +549,6 @@ impl Engine {
                 },
             });
         }
-        result
     }
 
     /// Returns the topmost element id containing `point`.
@@ -330,19 +583,23 @@ impl Engine {
     ) {
         let clip_x = node.clip_x || node.scroll_x;
         let clip_y = node.clip_y || node.scroll_y;
-        let current_clip = parent_clip.add(bounds, clip_x, clip_y);
-        let hit_bounds = parent_clip.apply(bounds);
-        let culled = self.culling && bounds.intersection(viewport).is_none();
         let bounds = node
             .id
             .as_deref()
-            .and_then(|id| self.transitions.get(id).copied())
+            .and_then(|id| self.transition_bounds.get(id).copied())
             .unwrap_or(bounds);
+        let current_clip = parent_clip.add(bounds, clip_x, clip_y);
+        let hit_bounds = parent_clip.apply(bounds);
+        let culled = self.culling && bounds.intersection(viewport).is_none();
 
-        let hit_testable = node
-            .floating
+        let hit_testable = !node
+            .id
             .as_ref()
-            .is_none_or(|floating| floating.pointer_capture == PointerCapture::Capture);
+            .is_some_and(|id| self.transition_non_interactive.contains(id))
+            && node
+                .floating
+                .as_ref()
+                .is_none_or(|floating| floating.pointer_capture == PointerCapture::Capture);
 
         if let Some(id) = &node.id {
             result.elements.insert(
@@ -497,6 +754,16 @@ impl Engine {
             .iter()
             .filter(|child| child.floating.is_none())
             .collect();
+        let flow_children: Vec<_> = normal_children
+            .iter()
+            .copied()
+            .filter(|child| {
+                child
+                    .id
+                    .as_ref()
+                    .is_none_or(|id| !self.transition_exiting.contains(id))
+            })
+            .collect();
         let mut floating_children: Vec<_> = node
             .children
             .iter()
@@ -505,11 +772,11 @@ impl Engine {
         floating_children.sort_by_key(|child| child.floating.as_ref().map_or(0, |f| f.z_index));
 
         let child_sizes = self.resolve_children_sizes(
-            &normal_children,
+            &flow_children,
             Size::new(content.width, content.height),
             node,
         );
-        let used_main = node.layout.gap * normal_children.len().saturating_sub(1) as f32
+        let used_main = node.layout.gap * flow_children.len().saturating_sub(1) as f32
             + child_sizes
                 .iter()
                 .map(|size| main_axis(*size, node.layout.direction))
@@ -560,7 +827,25 @@ impl Engine {
             );
         }
 
-        for (child, child_size) in normal_children.into_iter().zip(child_sizes) {
+        let mut child_sizes = flow_children.into_iter().zip(child_sizes);
+        for child in normal_children {
+            let exiting = child
+                .id
+                .as_ref()
+                .is_some_and(|id| self.transition_exiting.contains(id));
+            let child_size = if exiting {
+                let fit = self.measure_node(child);
+                self.resolve_child_size(
+                    child,
+                    fit,
+                    content.width,
+                    content.height,
+                    None,
+                    node.layout.direction,
+                )
+            } else {
+                child_sizes.next().expect("flow child size").1
+            };
             let cross_offset = match node.layout.direction {
                 Direction::Row => match node.layout.align_y {
                     AlignY::Top => 0.0,
@@ -590,7 +875,9 @@ impl Engine {
             };
 
             self.layout_node_clipped(child, child_bounds, viewport, clip, result);
-            cursor += main_axis(child_size, node.layout.direction) + node.layout.gap;
+            if !exiting {
+                cursor += main_axis(child_size, node.layout.direction) + node.layout.gap;
+            }
         }
 
         for child in floating_children {
@@ -719,12 +1006,18 @@ impl Engine {
                 let mut preferred_cross: f32 = 0.0;
                 let mut minimum_main: f32 = 0.0;
                 let mut minimum_cross: f32 = 0.0;
-                for (index, child) in node
+                let children: Vec<_> = node
                     .children
                     .iter()
-                    .filter(|child| child.floating.is_none())
-                    .enumerate()
-                {
+                    .filter(|child| {
+                        child.floating.is_none()
+                            && child
+                                .id
+                                .as_ref()
+                                .is_none_or(|id| !self.transition_exiting.contains(id))
+                    })
+                    .collect();
+                for (index, child) in children.into_iter().enumerate() {
                     let size = self.intrinsic_size(child);
                     if index > 0 {
                         preferred_main += node.layout.gap;
@@ -907,7 +1200,13 @@ impl Engine {
                 let children: Vec<_> = node
                     .children
                     .iter()
-                    .filter(|child| child.floating.is_none())
+                    .filter(|child| {
+                        child.floating.is_none()
+                            && child
+                                .id
+                                .as_ref()
+                                .is_none_or(|id| !self.transition_exiting.contains(id))
+                    })
                     .collect();
                 let intrinsic: Vec<_> = children
                     .iter()
@@ -1121,6 +1420,326 @@ impl Engine {
             self.measure_text(&text[..char_index_to_byte(text, end)], style)
                 .width,
         ))
+    }
+}
+
+fn normalize_tree(
+    node: &mut Node,
+    path: &str,
+    transitions: &mut Vec<TransitionNode>,
+    hashes: &mut HashSet<u32>,
+    errors: &mut Vec<LayoutError>,
+) {
+    if !normalize_node(node, path, "", 0, transitions, hashes, errors) {
+        *node = Node::new();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn normalize_node(
+    node: &mut Node,
+    path: &str,
+    parent: &str,
+    sibling_index: usize,
+    transitions: &mut Vec<TransitionNode>,
+    hashes: &mut HashSet<u32>,
+    errors: &mut Vec<LayoutError>,
+) -> bool {
+    if let Some(id) = &node.id
+        && id.starts_with("__rlay_")
+    {
+        errors.push(LayoutError::ReservedElementId(id.clone()));
+        return false;
+    }
+    let stable = node.element_id.clone();
+    if let Some(element_id) = &stable
+        && !hashes.insert(element_id.hash)
+    {
+        errors.push(LayoutError::DuplicateElementId(element_id.hash));
+    }
+    if node.id.is_none() {
+        node.id = Some(path.to_owned());
+    }
+    let key = node.id.clone().expect("assigned internal id");
+
+    if node.transition.is_some() && stable.is_none() {
+        errors.push(LayoutError::TransitionMissingId);
+    }
+    if node.transition.is_some() && matches!(node.kind, NodeKind::Text { .. }) {
+        errors.push(LayoutError::TextTransitionUnsupported);
+        node.transition = None;
+    }
+
+    let mut index = 0;
+    node.children.retain_mut(|child| {
+        let keep = normalize_node(
+            child,
+            &format!("{path}/{index}"),
+            &key,
+            index,
+            transitions,
+            hashes,
+            errors,
+        );
+        index += usize::from(keep);
+        keep
+    });
+
+    if let (Some(config), Some(element_id)) = (node.transition, stable) {
+        transitions.push(TransitionNode {
+            hash: element_id.hash,
+            key,
+            parent: parent.to_owned(),
+            sibling_index,
+            config,
+            snapshot: node.clone(),
+        });
+    }
+    true
+}
+
+fn values(node: &Node, bounds: Rect) -> TransitionValues {
+    TransitionValues {
+        bounds,
+        background: node.background,
+        overlay: node.overlay.unwrap_or(Color::TRANSPARENT),
+        radius: node.border.radius,
+        border_color: node.border.color,
+        border_width: node.border.width,
+    }
+}
+
+fn changed_properties(
+    old: TransitionValues,
+    new: TransitionValues,
+    configured: TransitionProperties,
+    old_relative: Point,
+    new_relative: Point,
+    reparented: bool,
+    viewport_changed: bool,
+) -> TransitionProperties {
+    let mut changed = TransitionProperties::empty();
+    if configured.contains(TransitionProperties::X)
+        && float_changed(old.bounds.x, new.bounds.x)
+        && (reparented || float_changed(old_relative.x, new_relative.x))
+        && !viewport_changed
+    {
+        changed |= TransitionProperties::X;
+    }
+    if configured.contains(TransitionProperties::Y)
+        && float_changed(old.bounds.y, new.bounds.y)
+        && (reparented || float_changed(old_relative.y, new_relative.y))
+        && !viewport_changed
+    {
+        changed |= TransitionProperties::Y;
+    }
+    if configured.contains(TransitionProperties::WIDTH)
+        && float_changed(old.bounds.width, new.bounds.width)
+        && !viewport_changed
+    {
+        changed |= TransitionProperties::WIDTH;
+    }
+    if configured.contains(TransitionProperties::HEIGHT)
+        && float_changed(old.bounds.height, new.bounds.height)
+        && !viewport_changed
+    {
+        changed |= TransitionProperties::HEIGHT;
+    }
+    if configured.contains(TransitionProperties::BACKGROUND_COLOR)
+        && old.background != new.background
+    {
+        changed |= TransitionProperties::BACKGROUND_COLOR;
+    }
+    if configured.contains(TransitionProperties::OVERLAY_COLOR) && old.overlay != new.overlay {
+        changed |= TransitionProperties::OVERLAY_COLOR;
+    }
+    if configured.contains(TransitionProperties::CORNER_RADIUS) && old.radius != new.radius {
+        changed |= TransitionProperties::CORNER_RADIUS;
+    }
+    if configured.contains(TransitionProperties::BORDER_COLOR)
+        && old.border_color != new.border_color
+    {
+        changed |= TransitionProperties::BORDER_COLOR;
+    }
+    if configured.contains(TransitionProperties::BORDER_WIDTH)
+        && old.border_width != new.border_width
+    {
+        changed |= TransitionProperties::BORDER_WIDTH;
+    }
+    changed
+}
+
+fn float_changed(left: f32, right: f32) -> bool {
+    (left - right).abs() >= 0.01
+}
+
+fn sync_unselected(
+    current: &mut TransitionValues,
+    target: TransitionValues,
+    selected: TransitionProperties,
+) {
+    if !selected.contains(TransitionProperties::X) {
+        current.bounds.x = target.bounds.x;
+    }
+    if !selected.contains(TransitionProperties::Y) {
+        current.bounds.y = target.bounds.y;
+    }
+    if !selected.contains(TransitionProperties::WIDTH) {
+        current.bounds.width = target.bounds.width;
+    }
+    if !selected.contains(TransitionProperties::HEIGHT) {
+        current.bounds.height = target.bounds.height;
+    }
+    if !selected.contains(TransitionProperties::BACKGROUND_COLOR) {
+        current.background = target.background;
+    }
+    if !selected.contains(TransitionProperties::OVERLAY_COLOR) {
+        current.overlay = target.overlay;
+    }
+    if !selected.contains(TransitionProperties::CORNER_RADIUS) {
+        current.radius = target.radius;
+    }
+    if !selected.contains(TransitionProperties::BORDER_COLOR) {
+        current.border_color = target.border_color;
+    }
+    if !selected.contains(TransitionProperties::BORDER_WIDTH) {
+        current.border_width = target.border_width;
+    }
+}
+
+fn apply_transition_values(
+    node: &mut Node,
+    runtimes: &HashMap<u32, TransitionRuntime>,
+    bounds: &mut HashMap<String, Rect>,
+    non_interactive: &mut HashSet<String>,
+) {
+    if let Some(element_id) = &node.element_id
+        && let Some(runtime) = runtimes.get(&element_id.hash)
+        && runtime.state != TransitionState::Idle
+    {
+        let p = runtime.active;
+        let current = runtime.current;
+        if p.contains(TransitionProperties::WIDTH) && !runtime.reparented {
+            node.layout.sizing.width = AxisSize::fixed(current.bounds.width);
+        }
+        if p.contains(TransitionProperties::HEIGHT) && !runtime.reparented {
+            node.layout.sizing.height = AxisSize::fixed(current.bounds.height);
+        }
+        if (runtime.state == TransitionState::Exiting || p.intersects(TransitionProperties::BOUNDS))
+            && let Some(id) = &node.id
+        {
+            bounds.insert(id.clone(), current.bounds);
+        }
+        if p.contains(TransitionProperties::BACKGROUND_COLOR) {
+            node.background = current.background;
+        }
+        if p.contains(TransitionProperties::OVERLAY_COLOR) {
+            node.overlay = Some(current.overlay);
+        }
+        if p.contains(TransitionProperties::CORNER_RADIUS) {
+            node.border.radius = current.radius;
+        }
+        if p.contains(TransitionProperties::BORDER_COLOR) {
+            node.border.color = current.border_color;
+        }
+        if p.contains(TransitionProperties::BORDER_WIDTH) {
+            node.border.width = current.border_width;
+        }
+        if p.intersects(TransitionProperties::POSITION)
+            && runtime.config.interaction == TransitionInteraction::Disable
+            && let Some(id) = &node.id
+        {
+            non_interactive.insert(id.clone());
+        }
+    }
+    for child in &mut node.children {
+        apply_transition_values(child, runtimes, bounds, non_interactive);
+    }
+}
+
+fn find_node<'a>(node: &'a Node, id: &str) -> Option<&'a Node> {
+    if node.id.as_deref() == Some(id) {
+        return Some(node);
+    }
+    node.children.iter().find_map(|child| find_node(child, id))
+}
+
+fn find_node_mut<'a>(node: &'a mut Node, id: &str) -> Option<&'a mut Node> {
+    if node.id.as_deref() == Some(id) {
+        return Some(node);
+    }
+    node.children
+        .iter_mut()
+        .find_map(|child| find_node_mut(child, id))
+}
+
+fn insert_exit(tree: &mut Node, mut snapshot: Node, runtime: &TransitionRuntime) {
+    if let Some(parent) = find_node_mut(tree, &runtime.parent) {
+        let index = match runtime.config.exit.sibling_ordering {
+            TransitionExitOrdering::Underneath => 0,
+            TransitionExitOrdering::Natural => runtime.sibling_index.min(parent.children.len()),
+            TransitionExitOrdering::Above => parent.children.len(),
+        };
+        parent.children.insert(index, snapshot);
+    } else {
+        snapshot.floating = Some(Floating {
+            attach_to: AttachTo::Root,
+            element_anchor: Anchor::TOP_LEFT,
+            target_anchor: Anchor::TOP_LEFT,
+            offset: Vector::new(runtime.current.bounds.x, runtime.current.bounds.y),
+            z_index: 0,
+            pointer_capture: PointerCapture::PassThrough,
+            clip_to_parent: false,
+        });
+        tree.children.push(snapshot);
+    }
+}
+
+fn remove_present_descendants(node: &mut Node, present: &HashSet<u32>) {
+    node.children.retain(|child| {
+        child
+            .element_id
+            .as_ref()
+            .is_none_or(|id| !present.contains(&id.hash))
+    });
+    for child in &mut node.children {
+        remove_present_descendants(child, present);
+    }
+}
+
+fn collect_node_ids(node: &Node, ids: &mut HashSet<String>) {
+    if let Some(id) = &node.id {
+        ids.insert(id.clone());
+    }
+    for child in &node.children {
+        collect_node_ids(child, ids);
+    }
+}
+
+fn node_contains_hash(node: &Node, hash: u32) -> bool {
+    node.element_id.as_ref().is_some_and(|id| id.hash == hash)
+        || node
+            .children
+            .iter()
+            .any(|child| node_contains_hash(child, hash))
+}
+
+fn strip_internal_ids(result: &mut LayoutResult) {
+    result.elements.retain(|id, _| !id.starts_with("__rlay_"));
+    result
+        .scroll_containers
+        .retain(|id, _| !id.starts_with("__rlay_"));
+    result
+        .hit_order
+        .retain(|hit| !hit.id.starts_with("__rlay_"));
+    for command in &mut result.commands {
+        if command
+            .id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("__rlay_"))
+        {
+            command.id = None;
+        }
     }
 }
 

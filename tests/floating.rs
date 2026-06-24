@@ -30,7 +30,7 @@ fn floating_child_attaches_to_parent_without_taking_flow_space() {
             ..Layout::default()
         }));
 
-    let result = engine().layout(&root, Size::new(100.0, 80.0));
+    let result = engine().layout(&root, Size::new(100.0, 80.0), 0.0);
 
     assert_eq!(
         result.element("flow").unwrap().bounds,
@@ -60,7 +60,7 @@ fn floating_child_can_attach_to_existing_element() {
             ..Layout::default()
         }));
 
-    let result = engine().layout(&root, Size::new(100.0, 80.0));
+    let result = engine().layout(&root, Size::new(100.0, 80.0), 0.0);
 
     assert_eq!(
         result.element("menu").unwrap().bounds,
@@ -81,7 +81,7 @@ fn pass_through_floating_does_not_capture_hit_test() {
             ..Layout::default()
         }));
     let mut engine = engine();
-    let result = engine.layout(&root, Size::new(100.0, 80.0));
+    let result = engine.layout(&root, Size::new(100.0, 80.0), 0.0);
 
     assert_eq!(
         Engine::hit_test(&result, Point::new(10.0, 10.0)),
@@ -103,7 +103,7 @@ fn floating_can_inherit_parent_clip() {
         }),
     );
     let mut engine = engine();
-    let result = engine.layout(&root, Size::new(50.0, 20.0));
+    let result = engine.layout(&root, Size::new(50.0, 20.0), 0.0);
 
     assert_eq!(
         Engine::hit_test(&result, Point::new(45.0, 10.0)),

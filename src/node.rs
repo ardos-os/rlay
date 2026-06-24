@@ -21,7 +21,7 @@ pub enum NodeKind {
 /// Nodes are immutable builder values: methods take and return `Self` so trees
 /// can be composed fluently.
 #[allow(clippy::struct_excessive_bools)]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub struct Node {
     /// Optional string id used for queries and hit testing.
     pub id: Option<String>,
@@ -53,6 +53,8 @@ pub struct Node {
     pub children: Vec<Node>,
     /// Node content kind.
     pub kind: NodeKind,
+    /// Optional declarative transition.
+    pub transition: Option<crate::Transition>,
 }
 
 impl Node {
@@ -129,6 +131,13 @@ impl Node {
         self
     }
 
+    /// Sets border color, widths and corner radii.
+    #[must_use]
+    pub fn border(mut self, border: Border) -> Self {
+        self.border = border;
+        self
+    }
+
     /// Sets an aspect ratio for fit sizing.
     #[must_use]
     pub fn aspect_ratio(mut self, ratio: f32) -> Self {
@@ -179,6 +188,13 @@ impl Node {
         self.children.push(child);
         self
     }
+
+    /// Attaches a declarative transition.
+    #[must_use]
+    pub fn transition(mut self, transition: crate::Transition) -> Self {
+        self.transition = Some(transition);
+        self
+    }
 }
 
 impl Default for Node {
@@ -199,6 +215,7 @@ impl Default for Node {
             floating: None,
             children: Vec::new(),
             kind: NodeKind::Container,
+            transition: None,
         }
     }
 }

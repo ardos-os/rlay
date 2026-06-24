@@ -103,6 +103,7 @@ fn fuzz_layout_never_emits_non_finite_bounds_or_panics() {
         let result = engine.layout(
             &root,
             Size::new(rng.range(1.0, 240.0), rng.range(1.0, 240.0)),
+            0.0,
         );
 
         for command in &result.commands {

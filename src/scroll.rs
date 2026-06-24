@@ -400,18 +400,14 @@ fn free_axis(value: f32, velocity: f32, max: f32) -> (f32, f32, bool) {
 fn sigmoid01(t: f32) -> f32 {
     1.0 / (1.0 + (-12.0 * (t - 0.5)).exp())
 }
-fn move_towards(
-    velocity: f32,
-    distance: f32,
-) -> f32 {
+fn move_towards(velocity: f32, distance: f32) -> f32 {
     let target_velocity = distance * OVERSCROLL_RETURN_SPEED;
 
     let delta = target_velocity - velocity;
-    let mut acceleration =
-        (distance.abs() * OVERSCROLL_RETURN_SPEED).sqrt().max(0.01);
+    let mut acceleration = (distance.abs() * OVERSCROLL_RETURN_SPEED).sqrt().max(0.01);
 
-    if velocity.signum() != distance.signum()  {
-        acceleration *= sigmoid01(distance.abs()).sqrt()*5.;
+    if velocity.signum() != distance.signum() {
+        acceleration *= sigmoid01(distance.abs()).sqrt() * 5.;
     }
     velocity + delta.clamp(-acceleration, acceleration)
 }

@@ -30,7 +30,7 @@
 //!
 //! 1. Update input with [`Engine::input_mut`].
 //! 2. Build the [`Node`] tree for this frame.
-//! 3. Call [`Engine::layout`].
+//! 3. Call [`Engine::layout`] with delta time in seconds.
 //! 4. Draw [`LayoutResult::commands`] with your renderer.
 //! 5. Query [`LayoutResult::element`], [`LayoutResult::pointer_over`] or
 //!    [`LayoutResult::scroll_container`] for interaction state.
@@ -49,7 +49,7 @@
 //!     ..Layout::default()
 //! }));
 //!
-//! let result = engine.layout(&root, Size::new(320.0, 240.0));
+//! let result = engine.layout(&root, Size::new(320.0, 240.0), 0.0);
 //! assert_eq!(result.element("button").unwrap().bounds.width, 120.0);
 //! ```
 //!
@@ -127,7 +127,7 @@
 //! let mut engine = Engine::new(|_, style| Size::new(0.0, style.font_size));
 //! engine.input_mut().set_mouse_position(Point::new(10.0, 10.0));
 //!
-//! let result = engine.layout(&Node::new().id("root"), Size::new(100.0, 100.0));
+//! let result = engine.layout(&Node::new().id("root"), Size::new(100.0, 100.0), 0.0);
 //! assert!(result.pointer_over("root"));
 //! ```
 //!
@@ -138,6 +138,23 @@
 //! scrolling averages active fingers so a two-finger drag does not scroll twice
 //! as fast as a one-finger drag. Pinch state is available with
 //! [`InputState::pinch`].
+//!
+//! # Transitions
+//!
+//! Nodes with stable ids can animate selected geometry and paint properties
+//! between frames.
+//!
+//! ```
+//! use rlay::{Engine, Node, Size, Transition, TransitionProperties};
+//!
+//! let mut engine = Engine::new(|_, style| Size::new(0.0, style.font_size));
+//! let panel = Node::new().id("panel").transition(Transition::ease_out(
+//!     0.2,
+//!     TransitionProperties::WIDTH | TransitionProperties::BACKGROUND_COLOR,
+//! ));
+//! let result = engine.layout(&panel, Size::new(100.0, 40.0), 1.0 / 60.0);
+//! assert!(result.errors.is_empty());
+//! ```
 //!
 //! # Floating And Overlays
 //!
@@ -170,7 +187,7 @@
 //! frame.open(Node::new().id("panel"));
 //! frame.child(Node::new().id("button"));
 //! frame.close().unwrap();
-//! let result = frame.end().unwrap();
+//! let result = frame.end(0.0).unwrap();
 //! assert!(result.element("button").is_some());
 //! ```
 //!
@@ -204,6 +221,7 @@ mod result;
 mod scroll;
 mod style;
 mod text;
+mod transition;
 
 pub use engine::{Engine, LayoutError, MeasureText};
 pub use frame::Frame;
@@ -219,7 +237,12 @@ pub use style::{
     AlignX, AlignY, Anchor, AttachTo, AxisSize, Border, Direction, Floating, Layout,
     PointerCapture, Sizing, TextAlign, TextStyle, TextWrap,
 };
-pub use text::{TextSelection, TransitionValues, ease_out};
+pub use text::TextSelection;
+pub use transition::{
+    Transition, TransitionArgs, TransitionEnter, TransitionEnterTrigger, TransitionExit,
+    TransitionExitOrdering, TransitionExitTrigger, TransitionFrame, TransitionInteraction,
+    TransitionProperties, TransitionState, TransitionValues, ease_out,
+};
 
 #[cfg(test)]
 mod tests;

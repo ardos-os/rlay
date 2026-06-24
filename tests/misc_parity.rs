@@ -1,6 +1,7 @@
 use rlay::{
-    AxisSize, CommandKind, Direction, Engine, Layout, LayoutError, Node, Point, Rect, Size, Sizing,
-    TextSelection, TextStyle, Vector, ease_out,
+    AxisSize, Color, CommandKind, Direction, Engine, Layout, LayoutError, Node, Padding, Point,
+    Radius, Rect, Size, Sizing, TextSelection, TextStyle, TransitionArgs, TransitionProperties,
+    TransitionState, TransitionValues, Vector, ease_out,
 };
 
 fn engine() -> Engine {
@@ -47,7 +48,7 @@ fn external_scroll_query_overrides_internal_offset() {
         }
     });
 
-    let result = engine.layout(&root, Size::new(20.0, 20.0));
+    let result = engine.layout(&root, Size::new(20.0, 20.0), 0.0);
 
     assert_eq!(
         result.scroll_container("list").unwrap().offset,
@@ -64,7 +65,7 @@ fn debug_mode_emits_debug_overlay_command() {
     let mut engine = engine();
     engine.set_debug(true);
 
-    let result = engine.layout(&Node::new().id("root"), Size::new(10.0, 10.0));
+    let result = engine.layout(&Node::new().id("root"), Size::new(10.0, 10.0), 0.0);
 
     assert!(
         result
@@ -86,9 +87,30 @@ fn debug_mode_emits_debug_overlay_command() {
 
 #[test]
 fn ease_out_interpolates_towards_target() {
-    assert_eq!(ease_out(0.0, 10.0, 0.0, 1.0), 0.0);
-    assert_eq!(ease_out(0.0, 10.0, 1.0, 1.0), 10.0);
-    assert!(ease_out(0.0, 10.0, 0.5, 1.0) > 5.0);
+    let initial = TransitionValues {
+        bounds: Rect::new(0.0, 0.0, 10.0, 10.0),
+        background: Color::TRANSPARENT,
+        overlay: Color::TRANSPARENT,
+        radius: Radius::default(),
+        border_color: Color::TRANSPARENT,
+        border_width: Padding::default(),
+    };
+    let target = TransitionValues {
+        bounds: Rect::new(10.0, 10.0, 20.0, 20.0),
+        ..initial
+    };
+    let frame = ease_out(TransitionArgs {
+        state: TransitionState::Transitioning,
+        initial,
+        current: initial,
+        target,
+        elapsed: 0.5,
+        duration: 1.0,
+        properties: TransitionProperties::BOUNDS,
+    });
+
+    assert_eq!(frame.values.bounds, Rect::new(8.75, 8.75, 18.75, 18.75));
+    assert!(!frame.complete);
 }
 
 #[test]
@@ -112,7 +134,7 @@ fn element_capacity_limit_reports_error_without_panicking() {
     let mut engine = engine();
     engine.set_max_elements(Some(1));
 
-    let result = engine.layout(&root, Size::new(10.0, 10.0));
+    let result = engine.layout(&root, Size::new(10.0, 10.0), 0.0);
 
     assert_eq!(result.errors, vec![LayoutError::ElementsCapacityExceeded]);
 }
@@ -125,71 +147,12 @@ fn frame_hovered_uses_previous_layout_result() {
     });
     let mut engine = engine();
     engine.input_mut().set_mouse_position(Point::new(1.0, 1.0));
-    let result = engine.layout(&root, Size::new(10.0, 10.0));
+    let result = engine.layout(&root, Size::new(10.0, 10.0), 0.0);
 
     let mut frame = engine.begin(Size::new(10.0, 10.0));
     frame.open(Node::new().id("button"));
 
     assert!(frame.hovered(&result));
-}
-
-#[test]
-fn transition_bounds_override_layout_bounds() {
-    let root = Node::new().id("panel").layout(Layout {
-        sizing: Sizing::fixed(10.0, 10.0),
-        ..Layout::default()
-    });
-    let mut engine = engine();
-    engine.set_transition_bounds("panel", Rect::new(5.0, 6.0, 7.0, 8.0));
-
-    let result = engine.layout(&root, Size::new(20.0, 20.0));
-
-    assert_eq!(
-        result.element("panel").unwrap().bounds,
-        Rect::new(5.0, 6.0, 7.0, 8.0)
-    );
-}
-
-#[test]
-fn transition_bounds_interpolates_layout_bounds() {
-    let root = Node::new().id("panel").layout(Layout {
-        sizing: Sizing::fixed(10.0, 10.0),
-        ..Layout::default()
-    });
-    let mut engine = engine();
-    engine.transition_bounds(
-        "panel",
-        Rect::new(0.0, 0.0, 10.0, 10.0),
-        Rect::new(10.0, 10.0, 20.0, 20.0),
-        0.5,
-        1.0,
-    );
-
-    let result = engine.layout(&root, Size::new(30.0, 30.0));
-
-    assert_eq!(
-        result.element("panel").unwrap().bounds,
-        Rect::new(7.5, 7.5, 17.5, 17.5)
-    );
-}
-
-#[test]
-fn transition_exit_commands_are_retained_after_element_disappears() {
-    let mut engine = engine();
-    engine.transition_exit_commands(
-        "toast",
-        vec![rlay::RenderCommand {
-            id: Some("toast".into()),
-            bounds: Rect::new(1.0, 2.0, 3.0, 4.0),
-            kind: CommandKind::Custom(99, rlay::Radius::default()),
-        }],
-    );
-
-    let result = engine.layout(&Node::new().id("root"), Size::new(10.0, 10.0));
-
-    assert!(result.commands.iter().any(|command| {
-        command.id.as_deref() == Some("toast") && matches!(command.kind, CommandKind::Custom(99, _))
-    }));
 }
 
 #[test]
@@ -201,7 +164,7 @@ fn additional_capacity_limits_report_errors() {
     engine.set_max_commands(Some(0));
     engine.set_max_measure_text_cache_entries(Some(0));
 
-    let result = engine.layout(&root, Size::new(100.0, 100.0));
+    let result = engine.layout(&root, Size::new(100.0, 100.0), 0.0);
 
     assert!(
         result

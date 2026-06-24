@@ -34,7 +34,7 @@ fn lays_out_row_with_fixed_and_grow_children() {
             ..Layout::default()
         }));
 
-    let result = engine().layout(&root, Size::new(300.0, 40.0));
+    let result = engine().layout(&root, Size::new(300.0, 40.0), 0.0);
 
     assert_eq!(
         result.elements["left"].bounds,
@@ -50,7 +50,7 @@ fn lays_out_row_with_fixed_and_grow_children() {
 fn text_uses_measure_callback_for_fit_size() {
     let root = Node::new().child(Node::text("abc", TextStyle::default()).id("text"));
 
-    let result = engine().layout(&root, Size::new(300.0, 40.0));
+    let result = engine().layout(&root, Size::new(300.0, 40.0), 0.0);
 
     assert_close(result.elements["text"].bounds.width, 48.0);
     assert_close(result.elements["text"].bounds.height, 16.0);
@@ -63,7 +63,7 @@ fn hit_test_returns_matching_element_id() {
         ..Layout::default()
     }));
     let mut engine = engine();
-    let result = engine.layout(&root, Size::new(300.0, 200.0));
+    let result = engine.layout(&root, Size::new(300.0, 200.0), 0.0);
 
     assert_eq!(
         Engine::hit_test(&result, Point::new(20.0, 20.0)),
@@ -81,7 +81,7 @@ fn hit_test_prefers_later_overlapping_elements() {
             ..Layout::default()
         }));
     let mut engine = engine();
-    let result = engine.layout(&root, Size::new(100.0, 40.0));
+    let result = engine.layout(&root, Size::new(100.0, 40.0), 0.0);
 
     assert_eq!(
         Engine::hit_test(&result, Point::new(20.0, 20.0)),
@@ -111,7 +111,7 @@ fn padding_and_gap_offset_children() {
             ..Layout::default()
         }));
 
-    let result = engine().layout(&root, Size::new(100.0, 40.0));
+    let result = engine().layout(&root, Size::new(100.0, 40.0), 0.0);
 
     assert_eq!(
         result.elements["a"].bounds,
@@ -137,7 +137,7 @@ fn center_alignment_moves_children_on_both_axes() {
             ..Layout::default()
         }));
 
-    let result = engine().layout(&root, Size::new(100.0, 50.0));
+    let result = engine().layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert_eq!(
         result.elements["child"].bounds,
@@ -165,7 +165,7 @@ fn column_grow_uses_vertical_space_only() {
             ..Layout::default()
         }));
 
-    let result = engine().layout(&root, Size::new(100.0, 80.0));
+    let result = engine().layout(&root, Size::new(100.0, 80.0), 0.0);
 
     assert_eq!(
         result.elements["top"].bounds,
@@ -187,7 +187,7 @@ fn percent_resolves_against_own_axis() {
         ..Layout::default()
     }));
 
-    let result = engine().layout(&root, Size::new(200.0, 80.0));
+    let result = engine().layout(&root, Size::new(200.0, 80.0), 0.0);
 
     assert_eq!(
         result.elements["child"].bounds,
@@ -201,7 +201,7 @@ fn render_commands_preserve_paint_order() {
         .background(Color::rgba(1.0, 2.0, 3.0, 255.0))
         .child(Node::text("ok", TextStyle::default()).id("label"));
 
-    let result = engine().layout(&root, Size::new(100.0, 40.0));
+    let result = engine().layout(&root, Size::new(100.0, 40.0), 0.0);
 
     assert!(matches!(
         result.commands[0].kind,
@@ -233,7 +233,7 @@ fn reports_multiple_touch_hits_in_same_frame() {
         .input_mut()
         .set_touch(2, Point::new(60.0, 10.0), true);
 
-    let result = engine.layout(&root, Size::new(100.0, 50.0));
+    let result = engine.layout(&root, Size::new(100.0, 50.0), 0.0);
 
     assert!(result.pointers.contains(&PointerHit {
         pointer_id: PointerId::Touch(1),
@@ -260,12 +260,12 @@ fn pointer_phase_advances_after_layout_frame() {
     engine
         .input_mut()
         .set_mouse_down(Point::new(1.0, 1.0), true);
-    let first = engine.layout(&root, Size::new(10.0, 10.0));
-    let second = engine.layout(&root, Size::new(10.0, 10.0));
+    let first = engine.layout(&root, Size::new(10.0, 10.0), 0.0);
+    let second = engine.layout(&root, Size::new(10.0, 10.0), 0.0);
     engine
         .input_mut()
         .set_mouse_down(Point::new(1.0, 1.0), false);
-    let third = engine.layout(&root, Size::new(10.0, 10.0));
+    let third = engine.layout(&root, Size::new(10.0, 10.0), 0.0);
 
     assert_eq!(first.pointers[0].phase, PointerPhase::PressedThisFrame);
     assert_eq!(second.pointers[0].phase, PointerPhase::Pressed);
@@ -283,7 +283,7 @@ fn layout_result_exposes_pointer_over_queries() {
         .input_mut()
         .set_mouse_position(Point::new(10.0, 10.0));
 
-    let result = engine.layout(&root, Size::new(100.0, 100.0));
+    let result = engine.layout(&root, Size::new(100.0, 100.0), 0.0);
 
     assert_eq!(
         result.element("button").unwrap().bounds,
@@ -300,7 +300,7 @@ fn current_input_can_hit_test_against_previous_layout() {
         ..Layout::default()
     }));
     let mut engine = engine();
-    let previous = engine.layout(&root, Size::new(100.0, 100.0));
+    let previous = engine.layout(&root, Size::new(100.0, 100.0), 0.0);
 
     engine
         .input_mut()
