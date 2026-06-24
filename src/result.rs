@@ -19,7 +19,7 @@ pub enum CommandKind {
         style: TextStyle,
     },
     /// Draw an application-owned image.
-    Image(u64),
+    Image(ImageRenderData),
     /// Draw an application-owned custom element.
     Custom(u64, Radius),
     /// Start clipping subsequent commands.
@@ -42,6 +42,18 @@ pub enum CommandKind {
         /// Number of commands in the result.
         commands: usize,
     },
+}
+
+/// Renderer-facing image data, equivalent to Clay's image render data with the
+/// unsafe image pointer replaced by an opaque identifier.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageRenderData {
+    /// Image tint/background color from the source node.
+    pub background_color: Color,
+    /// Corner radii from the source node.
+    pub corner_radius: Radius,
+    /// Application-owned image identifier.
+    pub image_id: ImageId,
 }
 
 /// A single ordered render command.
@@ -234,5 +246,6 @@ use crate::engine::LayoutError;
 use crate::geometry::{Color, Point, Radius, Rect, Size, Vector};
 use crate::id::ElementId;
 use crate::input::{InputState, PointerHit};
+use crate::node::ImageId;
 use crate::style::{Border, TextStyle};
 use std::collections::HashMap;

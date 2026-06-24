@@ -1,8 +1,8 @@
 use std::{cell::Cell, rc::Rc};
 
 use rlay::{
-    AxisSize, CommandKind, Direction, ElementId, Engine, Layout, LayoutError, Node, Rect,
-    RenderCommand, Size, Sizing, TextAlign, TextStyle, TextWrap,
+    AxisSize, Color, CommandKind, Direction, ElementId, Engine, ImageId, ImageRenderData, Layout,
+    LayoutError, Node, Radius, Rect, RenderCommand, Size, Sizing, TextAlign, TextStyle, TextWrap,
 };
 
 fn engine() -> Engine {
@@ -84,7 +84,11 @@ fn image_node_emits_image_command() {
         vec![RenderCommand {
             id: Some("image".into()),
             bounds: Rect::new(0.0, 0.0, 30.0, 20.0),
-            kind: CommandKind::Image(42),
+            kind: CommandKind::Image(ImageRenderData {
+                background_color: Color::TRANSPARENT,
+                corner_radius: Radius::default(),
+                image_id: ImageId::new(42),
+            }),
         }]
     );
 }

@@ -211,6 +211,79 @@ fn render_commands_preserve_paint_order() {
 }
 
 #[test]
+fn image_command_matches_clay_render_data() {
+    let color = Color::rgba(10.0, 20.0, 30.0, 40.0);
+    let radius = Radius::all(8.0);
+    let root = Node::image(ImageId::new(42))
+        .background(color)
+        .radius(radius)
+        .layout(Layout {
+            sizing: Sizing::fixed(120.0, 80.0),
+            ..Layout::default()
+        });
+
+    let result = engine().layout(&root, Size::new(120.0, 80.0), 0.0);
+    let image = result
+        .commands
+        .iter()
+        .find_map(|command| match command.kind {
+            CommandKind::Image(image) => Some(image),
+            _ => None,
+        })
+        .expect("image command");
+
+    assert_eq!(image.image_id, ImageId::new(42));
+    assert_eq!(image.background_color, color);
+    assert_eq!(image.corner_radius, radius);
+}
+
+#[test]
+fn image_aspect_ratio_derives_fit_height_from_fixed_width() {
+    let root = Node::new().child(Node::image(1).id("image").aspect_ratio(2.0).layout(Layout {
+        sizing: Sizing {
+            width: AxisSize::fixed(120.0),
+            height: AxisSize::FIT,
+        },
+        ..Layout::default()
+    }));
+
+    let result = engine().layout(&root, Size::new(300.0, 200.0), 0.0);
+
+    assert_eq!(
+        result.elements["image"].bounds,
+        Rect::new(0.0, 0.0, 120.0, 60.0)
+    );
+}
+
+#[test]
+fn image_aspect_ratio_derives_fit_width_before_sibling_layout() {
+    let root = Node::new()
+        .layout(Layout {
+            direction: Direction::Row,
+            ..Layout::default()
+        })
+        .child(Node::image(1).id("image").aspect_ratio(2.0).layout(Layout {
+            sizing: Sizing {
+                width: AxisSize::FIT,
+                height: AxisSize::fixed(60.0),
+            },
+            ..Layout::default()
+        }))
+        .child(Node::new().id("sibling").layout(Layout {
+            sizing: Sizing::fixed(20.0, 20.0),
+            ..Layout::default()
+        }));
+
+    let result = engine().layout(&root, Size::new(300.0, 200.0), 0.0);
+
+    assert_eq!(
+        result.elements["image"].bounds,
+        Rect::new(0.0, 0.0, 120.0, 60.0)
+    );
+    assert_close(result.elements["sibling"].bounds.x, 120.0);
+}
+
+#[test]
 fn reports_multiple_touch_hits_in_same_frame() {
     let root = Node::new()
         .layout(Layout {

@@ -3,7 +3,8 @@ use crate::geometry::{Color, Point, Radius, Rect, Size, Vector};
 use crate::input::{InputState, PointerHit};
 use crate::node::{Node, NodeKind};
 use crate::result::{
-    ClipRegion, CommandKind, ElementData, HitEntry, LayoutResult, RenderCommand, ScrollData,
+    ClipRegion, CommandKind, ElementData, HitEntry, ImageRenderData, LayoutResult, RenderCommand,
+    ScrollData,
 };
 use crate::scroll::ScrollState;
 use crate::style::{
@@ -264,7 +265,7 @@ impl Engine {
             current_transition_hashes.contains(hash)
                 || (!current_hashes.contains(hash)
                     && (runtime.state == TransitionState::Exiting
-                        || (runtime.config.exit.target.is_some()
+                        || (runtime.config.has_exit()
                             && (runtime.config.exit.trigger
                                 == TransitionExitTrigger::WhenParentExits
                                 || current_tree_ids.contains(&runtime.parent)))))
@@ -275,7 +276,7 @@ impl Engine {
             .iter()
             .filter(|(hash, runtime)| {
                 !current_hashes.contains(hash)
-                    && runtime.config.exit.target.is_some()
+                    && runtime.config.has_exit()
                     && (runtime.config.exit.trigger == TransitionExitTrigger::WhenParentExits
                         || current_tree_ids.contains(&runtime.parent))
             })
@@ -301,12 +302,11 @@ impl Engine {
         for hash in disappearing {
             if let Some(runtime) = self.transition_runtime.get_mut(&hash) {
                 if runtime.state != TransitionState::Exiting {
-                    let Some(exit_target) = runtime.config.exit.target else {
-                        continue;
-                    };
                     runtime.state = TransitionState::Exiting;
                     runtime.initial = runtime.current;
-                    runtime.target = exit_target(runtime.current, runtime.config.properties);
+                    runtime.target = runtime
+                        .config
+                        .exit_values(runtime.current, runtime.config.properties);
                     runtime.active = runtime.config.properties;
                     runtime.elapsed = 0.0;
                 }
@@ -385,15 +385,12 @@ impl Engine {
                     runtime.exit_complete = false;
                 }
             } else {
-                let should_enter = info.config.enter.initial.is_some()
+                let should_enter = info.config.has_enter()
                     && (!parent_appeared
                         || info.config.enter.trigger
                             == crate::transition::TransitionEnterTrigger::OnFirstParentFrame);
                 let current = if should_enter {
-                    info.config
-                        .enter
-                        .initial
-                        .map_or(target, |initial| initial(target, info.config.properties))
+                    info.config.enter_values(target, info.config.properties)
                 } else {
                     target
                 };
@@ -430,7 +427,7 @@ impl Engine {
             if runtime.state != TransitionState::Idle
                 && !(runtime.state == TransitionState::Entering && runtime.elapsed == 0.0)
             {
-                let frame = (runtime.config.handler)(TransitionArgs {
+                let frame = runtime.config.frame(TransitionArgs {
                     state: runtime.state,
                     initial: runtime.initial,
                     current: runtime.current,
@@ -674,12 +671,16 @@ impl Engine {
                     });
                 }
             }
-            NodeKind::Image(value) => {
+            NodeKind::Image(image) => {
                 if !culled {
                     result.commands.push(RenderCommand {
                         id: node.id.clone(),
                         bounds,
-                        kind: CommandKind::Image(*value),
+                        kind: CommandKind::Image(ImageRenderData {
+                            background_color: node.background,
+                            corner_radius: node.border.radius,
+                            image_id: image.image_id,
+                        }),
                     });
                 }
             }
@@ -997,10 +998,17 @@ impl Engine {
                     minimum: Size::new(minimum_width, height),
                 }
             }
-            NodeKind::Image(_) | NodeKind::Custom(_) => IntrinsicSize {
-                preferred: Size::ZERO,
-                minimum: Size::ZERO,
-            },
+            NodeKind::Image(_) | NodeKind::Custom(_) => {
+                let mut preferred = Size::new(
+                    intrinsic_axis(node.layout.sizing.width, 0.0),
+                    intrinsic_axis(node.layout.sizing.height, 0.0),
+                );
+                update_aspect_ratio_size(&mut preferred, node.aspect_ratio);
+                IntrinsicSize {
+                    preferred,
+                    minimum: preferred,
+                }
+            }
             NodeKind::Container => {
                 let mut preferred_main: f32 = 0.0;
                 let mut preferred_cross: f32 = 0.0;
@@ -1090,6 +1098,7 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_lines)]
     fn resolve_children_sizes(
         &mut self,
         children: &[&Node],
@@ -1139,22 +1148,36 @@ impl Engine {
         let natural_heights: Vec<_> = children
             .iter()
             .zip(&widths)
-            .map(|(child, width)| self.height_for_width(child, *width))
+            .map(|(child, width)| {
+                child
+                    .aspect_ratio
+                    .filter(|ratio| *ratio != 0.0 && *width != 0.0)
+                    .map_or_else(
+                        || self.height_for_width(child, *width),
+                        |ratio| *width / ratio,
+                    )
+            })
             .collect();
         let height_available = (available.height - gap).max(0.0);
         let mut heights: Vec<_> = children
             .iter()
             .zip(&intrinsic)
             .zip(&natural_heights)
-            .map(|((child, size), natural)| match parent.layout.direction {
-                Direction::Row => cross_axis(
-                    child.layout.sizing.height,
-                    *natural,
-                    size.minimum.height,
-                    available.height,
-                ),
-                Direction::Column => {
-                    initial_axis(child.layout.sizing.height, *natural, height_available)
+            .map(|((child, size), natural)| {
+                if child.aspect_ratio.is_some() && *natural != 0.0 {
+                    *natural
+                } else {
+                    match parent.layout.direction {
+                        Direction::Row => cross_axis(
+                            child.layout.sizing.height,
+                            *natural,
+                            size.minimum.height,
+                            available.height,
+                        ),
+                        Direction::Column => {
+                            initial_axis(child.layout.sizing.height, *natural, height_available)
+                        }
+                    }
                 }
             })
             .collect();
@@ -1179,13 +1202,11 @@ impl Engine {
             .iter()
             .zip(widths)
             .zip(heights)
-            .map(|((child, mut width), mut height)| {
-                if let Some(ratio) = child.aspect_ratio {
-                    match (child.layout.sizing.width, child.layout.sizing.height) {
-                        (_, AxisSize::Fit { .. }) if width > 0.0 => height = width / ratio,
-                        (AxisSize::Fit { .. }, _) if height > 0.0 => width = height * ratio,
-                        _ => {}
-                    }
+            .map(|((child, mut width), height)| {
+                if let Some(ratio) = child.aspect_ratio
+                    && ratio != 0.0
+                {
+                    width = ratio * height;
                 }
                 Size::new(width, height)
             })
@@ -1868,6 +1889,17 @@ fn intrinsic_axis(rule: AxisSize, preferred: f32) -> f32 {
         AxisSize::Fit { min, max } | AxisSize::Grow { min, max } => preferred.clamp(min, max),
         AxisSize::Percent(_) => 0.0,
         AxisSize::Fixed(value) => value.max(0.0),
+    }
+}
+
+fn update_aspect_ratio_size(size: &mut Size, aspect_ratio: Option<f32>) {
+    let Some(ratio) = aspect_ratio.filter(|ratio| *ratio != 0.0) else {
+        return;
+    };
+    if size.width == 0.0 && size.height != 0.0 {
+        size.width = size.height * ratio;
+    } else if size.width != 0.0 && size.height == 0.0 {
+        size.height = size.width / ratio;
     }
 }
 

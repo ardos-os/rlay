@@ -171,6 +171,23 @@ pub struct Transition {
     pub enter: TransitionEnter,
     /// Optional exit configuration.
     pub exit: TransitionExit,
+    /// Optional backend adapter for translating callback value types.
+    #[doc(hidden)]
+    pub adapter: Option<TransitionAdapter>,
+}
+
+/// Context-aware callback adapter used by higher-level UI toolkits.
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct TransitionAdapter {
+    /// Opaque toolkit-owned callback data.
+    pub data: usize,
+    /// Context-aware transition handler.
+    pub handler: fn(TransitionArgs, usize) -> TransitionFrame,
+    /// Context-aware enter mapper.
+    pub enter: Option<fn(TransitionValues, TransitionProperties, usize) -> TransitionValues>,
+    /// Context-aware exit mapper.
+    pub exit: Option<fn(TransitionValues, TransitionProperties, usize) -> TransitionValues>,
 }
 
 impl Transition {
@@ -191,7 +208,54 @@ impl Transition {
                 trigger: TransitionExitTrigger::SkipWhenParentExits,
                 sibling_ordering: TransitionExitOrdering::Underneath,
             },
+            adapter: None,
         }
+    }
+
+    pub(crate) fn has_enter(self) -> bool {
+        self.adapter.and_then(|adapter| adapter.enter).is_some() || self.enter.initial.is_some()
+    }
+
+    pub(crate) fn enter_values(
+        self,
+        values: TransitionValues,
+        properties: TransitionProperties,
+    ) -> TransitionValues {
+        if let Some(adapter) = self.adapter
+            && let Some(enter) = adapter.enter
+        {
+            return enter(values, properties, adapter.data);
+        }
+        self.enter
+            .initial
+            .map_or(values, |enter| enter(values, properties))
+    }
+
+    pub(crate) fn has_exit(self) -> bool {
+        self.adapter.and_then(|adapter| adapter.exit).is_some() || self.exit.target.is_some()
+    }
+
+    pub(crate) fn exit_values(
+        self,
+        values: TransitionValues,
+        properties: TransitionProperties,
+    ) -> TransitionValues {
+        if let Some(adapter) = self.adapter
+            && let Some(exit) = adapter.exit
+        {
+            return exit(values, properties, adapter.data);
+        }
+        self.exit
+            .target
+            .map_or(values, |exit| exit(values, properties))
+    }
+
+    #[allow(clippy::large_types_passed_by_value)]
+    pub(crate) fn frame(self, args: TransitionArgs) -> TransitionFrame {
+        self.adapter.map_or_else(
+            || (self.handler)(args),
+            |adapter| (adapter.handler)(args, adapter.data),
+        )
     }
 }
 

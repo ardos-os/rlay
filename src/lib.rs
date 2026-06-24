@@ -231,17 +231,19 @@ pub use input::{
     InputState, MouseButton, PinchGesture, Pointer, PointerGesture, PointerHit, PointerId,
     PointerPhase, TouchPhase,
 };
-pub use node::{Node, NodeKind};
-pub use result::{CommandKind, ElementData, LayoutResult, RenderCommand, ScrollData};
+pub use node::{ImageElementConfig, ImageId, Node, NodeKind};
+pub use result::{
+    CommandKind, ElementData, ImageRenderData, LayoutResult, RenderCommand, ScrollData,
+};
 pub use style::{
     AlignX, AlignY, Anchor, AttachTo, AxisSize, Border, Direction, Floating, Layout,
     PointerCapture, Sizing, TextAlign, TextStyle, TextWrap,
 };
 pub use text::TextSelection;
 pub use transition::{
-    Transition, TransitionArgs, TransitionEnter, TransitionEnterTrigger, TransitionExit,
-    TransitionExitOrdering, TransitionExitTrigger, TransitionFrame, TransitionInteraction,
-    TransitionProperties, TransitionState, TransitionValues, ease_out,
+    Transition, TransitionAdapter, TransitionArgs, TransitionEnter, TransitionEnterTrigger,
+    TransitionExit, TransitionExitOrdering, TransitionExitTrigger, TransitionFrame,
+    TransitionInteraction, TransitionProperties, TransitionState, TransitionValues, ease_out,
 };
 
 #[cfg(test)]

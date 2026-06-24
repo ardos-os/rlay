@@ -11,9 +11,41 @@ pub enum NodeKind {
         style: TextStyle,
     },
     /// An image placeholder identified by an application-defined handle.
-    Image(u64),
+    Image(ImageElementConfig),
     /// A custom renderable payload identified by an application-defined handle.
     Custom(u64),
+}
+
+/// Opaque image identifier supplied by the host application.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct ImageId(u64);
+
+impl ImageId {
+    /// Creates an image identifier.
+    #[must_use]
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+
+    /// Returns the application-defined integer value.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl From<u64> for ImageId {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+/// Image element configuration, equivalent to Clay's image config with the
+/// unsafe image pointer replaced by an opaque identifier.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImageElementConfig {
+    /// Application-owned image identifier.
+    pub image_id: ImageId,
 }
 
 /// A layout tree node.
@@ -86,9 +118,11 @@ impl Node {
 
     /// Creates an image render node.
     #[must_use]
-    pub fn image(value: u64) -> Self {
+    pub fn image(image_id: impl Into<ImageId>) -> Self {
         Self {
-            kind: NodeKind::Image(value),
+            kind: NodeKind::Image(ImageElementConfig {
+                image_id: image_id.into(),
+            }),
             ..Self::default()
         }
     }
