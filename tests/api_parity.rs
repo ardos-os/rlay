@@ -112,6 +112,94 @@ fn aspect_ratio_derives_fit_axis_from_fixed_axis() {
 }
 
 #[test]
+fn aspect_ratio_derives_fit_height_from_grow_width_inside_fit_container() {
+    let root = Node::new()
+        .layout(Layout {
+            sizing: Sizing::fixed(320.0, 180.0),
+            ..Layout::default()
+        })
+        .child(
+            Node::new()
+                .id("card")
+                .layout(Layout {
+                    sizing: Sizing {
+                        width: AxisSize::GROW,
+                        height: AxisSize::FIT,
+                    },
+                    direction: Direction::Column,
+                    ..Layout::default()
+                })
+                .child(
+                    Node::image(1)
+                        .id("thumbnail")
+                        .aspect_ratio(16.0 / 9.0)
+                        .layout(Layout {
+                            sizing: Sizing {
+                                width: AxisSize::GROW,
+                                height: AxisSize::FIT,
+                            },
+                            ..Layout::default()
+                        }),
+                ),
+        );
+
+    let result = engine().layout(&root, Size::new(320.0, 180.0), 0.0);
+
+    assert_eq!(
+        result.element("card").unwrap().bounds,
+        Rect::new(0.0, 0.0, 320.0, 180.0)
+    );
+    assert_eq!(
+        result.element("thumbnail").unwrap().bounds,
+        Rect::new(0.0, 0.0, 320.0, 180.0)
+    );
+}
+
+#[test]
+fn aspect_ratio_derives_fit_height_from_percent_width_inside_fit_container() {
+    let root = Node::new()
+        .layout(Layout {
+            sizing: Sizing::fixed(320.0, 180.0),
+            ..Layout::default()
+        })
+        .child(
+            Node::new()
+                .id("card")
+                .layout(Layout {
+                    sizing: Sizing {
+                        width: AxisSize::GROW,
+                        height: AxisSize::FIT,
+                    },
+                    direction: Direction::Column,
+                    ..Layout::default()
+                })
+                .child(
+                    Node::image(1)
+                        .id("thumbnail")
+                        .aspect_ratio(16.0 / 9.0)
+                        .layout(Layout {
+                            sizing: Sizing {
+                                width: AxisSize::Percent(1.0),
+                                height: AxisSize::FIT,
+                            },
+                            ..Layout::default()
+                        }),
+                ),
+        );
+
+    let result = engine().layout(&root, Size::new(320.0, 180.0), 0.0);
+
+    assert_eq!(
+        result.element("card").unwrap().bounds,
+        Rect::new(0.0, 0.0, 320.0, 180.0)
+    );
+    assert_eq!(
+        result.element("thumbnail").unwrap().bounds,
+        Rect::new(0.0, 0.0, 320.0, 180.0)
+    );
+}
+
+#[test]
 fn text_wraps_words_and_aligns_lines() {
     let style = TextStyle {
         font_size: 10.0,

@@ -1216,7 +1216,13 @@ impl Engine {
     fn height_for_width(&mut self, node: &Node, width: f32) -> f32 {
         match &node.kind {
             NodeKind::Text { text, style } => self.text_layout_size(text, style, width).height,
-            NodeKind::Image(_) | NodeKind::Custom(_) => self.intrinsic_size(node).preferred.height,
+            NodeKind::Image(_) | NodeKind::Custom(_) => node
+                .aspect_ratio
+                .filter(|ratio| *ratio > 0.0 && width > 0.0)
+                .map_or_else(
+                    || self.intrinsic_size(node).preferred.height,
+                    |ratio| width / ratio,
+                ),
             NodeKind::Container => {
                 let children: Vec<_> = node
                     .children
