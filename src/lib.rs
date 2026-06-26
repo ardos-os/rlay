@@ -214,6 +214,7 @@
 mod engine;
 mod frame;
 mod geometry;
+mod hash;
 mod id;
 mod input;
 mod node;
@@ -237,7 +238,7 @@ pub use result::{
 };
 pub use style::{
     AlignX, AlignY, Anchor, AttachTo, AxisSize, Border, Direction, Floating, Layout,
-    PointerCapture, Sizing, TextAlign, TextStyle, TextWrap,
+    PointerCapture, Sizing, TextAlign, TextOverflowMode, TextStyle, TextWrap,
 };
 pub use text::TextSelection;
 pub use transition::{

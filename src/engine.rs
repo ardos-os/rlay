@@ -1,5 +1,6 @@
-use crate::frame::Frame;
+use crate::frame::{Frame, FrameNode};
 use crate::geometry::{Color, Point, Radius, Rect, Size, Vector};
+use crate::hash::FastHasher;
 use crate::input::{InputState, PointerHit};
 use crate::node::{Node, NodeKind};
 use crate::result::{
@@ -9,14 +10,18 @@ use crate::result::{
 use crate::scroll::ScrollState;
 use crate::style::{
     AlignX, AlignY, Anchor, AttachTo, AxisSize, Direction, Floating, Layout, PointerCapture,
-    Sizing, TextAlign, TextStyle, TextWrap,
+    Sizing, TextAlign, TextOverflowMode, TextStyle, TextWrap,
 };
 use crate::text::{TextSelection, char_index_to_byte, main_axis, resolved_line_height};
 use crate::transition::{
     Transition, TransitionArgs, TransitionExitOrdering, TransitionExitTrigger,
     TransitionInteraction, TransitionProperties, TransitionState, TransitionValues,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap as StdHashMap, HashSet as StdHashSet};
+use std::hash::BuildHasherDefault;
+
+type HashMap<K, V> = StdHashMap<K, V, BuildHasherDefault<FastHasher>>;
+type HashSet<T> = StdHashSet<T, BuildHasherDefault<FastHasher>>;
 
 /// Text measurement callback used by the layout engine.
 ///
@@ -39,6 +44,15 @@ pub struct Engine {
     transition_non_interactive: HashSet<String>,
     transition_exiting: HashSet<String>,
     previous_tree_ids: HashSet<String>,
+    scratch_transition_nodes: Vec<TransitionNode>,
+    scratch_current_hashes: HashSet<u32>,
+    scratch_current_transition_hashes: HashSet<u32>,
+    scratch_current_tree_ids: HashSet<String>,
+    scratch_disappearing: Vec<u32>,
+    scratch_nested: Vec<u32>,
+    scratch_appeared_ids: HashSet<String>,
+    pub(crate) scratch_frame_nodes: Vec<FrameNode>,
+    pub(crate) scratch_frame_stack: Vec<usize>,
     previous_viewport: Option<Size>,
     culling: bool,
     debug: bool,
@@ -112,20 +126,39 @@ pub enum LayoutError {
     /// A public id used an internal `__rlay_` prefix.
     ReservedElementId(String),
 }
+struct TextLayoutLine {
+    text: String,
+    bounds: Rect,
+}
+
+struct TextBlockLayout {
+    lines: Vec<TextLayoutLine>,
+    size: Size,
+    did_truncate: bool,
+}
 
 impl Engine {
     /// Creates an engine with a text measurement callback.
     pub fn new(measure_text: impl Fn(&str, &TextStyle) -> Size + 'static) -> Self {
         Self {
             measure_text: Box::new(measure_text),
-            measure_cache: HashMap::new(),
+            measure_cache: HashMap::default(),
             input: InputState::default(),
             scroll: ScrollState::default(),
-            transition_runtime: HashMap::new(),
-            transition_bounds: HashMap::new(),
-            transition_non_interactive: HashSet::new(),
-            transition_exiting: HashSet::new(),
-            previous_tree_ids: HashSet::new(),
+            transition_runtime: HashMap::default(),
+            transition_bounds: HashMap::default(),
+            transition_non_interactive: HashSet::default(),
+            transition_exiting: HashSet::default(),
+            previous_tree_ids: HashSet::default(),
+            scratch_transition_nodes: Vec::new(),
+            scratch_current_hashes: HashSet::default(),
+            scratch_current_transition_hashes: HashSet::default(),
+            scratch_current_tree_ids: HashSet::default(),
+            scratch_disappearing: Vec::new(),
+            scratch_nested: Vec::new(),
+            scratch_appeared_ids: HashSet::default(),
+            scratch_frame_nodes: Vec::new(),
+            scratch_frame_stack: Vec::new(),
             previous_viewport: None,
             culling: false,
             debug: false,
@@ -219,13 +252,20 @@ impl Engine {
 
     /// Begins an immediate-mode frame.
     pub fn begin(&mut self, size: Size) -> Frame<'_> {
+        let mut nodes = std::mem::take(&mut self.scratch_frame_nodes);
+        let mut stack = std::mem::take(&mut self.scratch_frame_stack);
+        nodes.clear();
+        stack.clear();
+        nodes.push(FrameNode::new(Node::new().layout(Layout {
+            sizing: Sizing::fixed(size.width, size.height),
+            ..Layout::default()
+        })));
+        stack.push(0);
         Frame {
             engine: self,
             size,
-            stack: vec![Node::new().layout(Layout {
-                sizing: Sizing::fixed(size.width, size.height),
-                ..Layout::default()
-            })],
+            nodes,
+            stack,
         }
     }
 
@@ -246,10 +286,50 @@ impl Engine {
         self.transition_non_interactive.clear();
         self.transition_exiting.clear();
 
+        let mut transition_nodes = std::mem::take(&mut self.scratch_transition_nodes);
+        let mut current_hashes = std::mem::take(&mut self.scratch_current_hashes);
+        let mut current_transition_hashes =
+            std::mem::take(&mut self.scratch_current_transition_hashes);
+        let mut current_tree_ids = std::mem::take(&mut self.scratch_current_tree_ids);
+        let mut disappearing = std::mem::take(&mut self.scratch_disappearing);
+        let mut nested = std::mem::take(&mut self.scratch_nested);
+        let mut appeared_ids = std::mem::take(&mut self.scratch_appeared_ids);
+        transition_nodes.clear();
+        current_hashes.clear();
+        current_transition_hashes.clear();
+        current_tree_ids.clear();
+        disappearing.clear();
+        nested.clear();
+        appeared_ids.clear();
+
+        if self.transition_runtime.is_empty() && can_use_plain_layout(root, &mut current_hashes) {
+            let mut result = self.layout_pass(root, size);
+            self.finish_layout(&mut result, size);
+            if !self.previous_tree_ids.is_empty() {
+                self.previous_tree_ids = result.elements.keys().cloned().collect();
+            }
+            self.previous_viewport = Some(size);
+
+            transition_nodes.clear();
+            current_hashes.clear();
+            current_transition_hashes.clear();
+            current_tree_ids.clear();
+            disappearing.clear();
+            nested.clear();
+            appeared_ids.clear();
+            self.scratch_transition_nodes = transition_nodes;
+            self.scratch_current_hashes = current_hashes;
+            self.scratch_current_transition_hashes = current_transition_hashes;
+            self.scratch_current_tree_ids = current_tree_ids;
+            self.scratch_disappearing = disappearing;
+            self.scratch_nested = nested;
+            self.scratch_appeared_ids = appeared_ids;
+
+            return result;
+        }
+
         let mut errors = Vec::new();
         let mut tree = root.clone();
-        let mut transition_nodes = Vec::new();
-        let mut current_hashes = HashSet::new();
         normalize_tree(
             &mut tree,
             "__rlay_root",
@@ -257,9 +337,7 @@ impl Engine {
             &mut current_hashes,
             &mut errors,
         );
-        let current_transition_hashes: HashSet<_> =
-            transition_nodes.iter().map(|node| node.hash).collect();
-        let mut current_tree_ids = HashSet::new();
+        current_transition_hashes.extend(transition_nodes.iter().map(|node| node.hash));
         collect_node_ids(&tree, &mut current_tree_ids);
         self.transition_runtime.retain(|hash, runtime| {
             current_transition_hashes.contains(hash)
@@ -271,36 +349,32 @@ impl Engine {
                                 || current_tree_ids.contains(&runtime.parent)))))
         });
 
-        let mut disappearing: Vec<_> = self
-            .transition_runtime
-            .iter()
-            .filter(|(hash, runtime)| {
-                !current_hashes.contains(hash)
-                    && runtime.config.has_exit()
-                    && (runtime.config.exit.trigger == TransitionExitTrigger::WhenParentExits
-                        || current_tree_ids.contains(&runtime.parent))
+        disappearing.extend(
+            self.transition_runtime
+                .iter()
+                .filter_map(|(hash, runtime)| {
+                    (!current_hashes.contains(hash)
+                        && runtime.config.has_exit()
+                        && (runtime.config.exit.trigger == TransitionExitTrigger::WhenParentExits
+                            || current_tree_ids.contains(&runtime.parent)))
+                    .then_some(*hash)
+                }),
+        );
+        nested.extend(disappearing.iter().copied().filter(|hash| {
+            disappearing.iter().any(|ancestor| {
+                ancestor != hash
+                    && self
+                        .transition_runtime
+                        .get(ancestor)
+                        .is_some_and(|runtime| node_contains_hash(&runtime.snapshot, *hash))
             })
-            .map(|(hash, _)| *hash)
-            .collect();
-        let nested: Vec<_> = disappearing
-            .iter()
-            .copied()
-            .filter(|hash| {
-                disappearing.iter().any(|ancestor| {
-                    ancestor != hash
-                        && self
-                            .transition_runtime
-                            .get(ancestor)
-                            .is_some_and(|runtime| node_contains_hash(&runtime.snapshot, *hash))
-                })
-            })
-            .collect();
+        }));
         disappearing.retain(|hash| !nested.contains(hash));
-        for hash in nested {
-            self.transition_runtime.remove(&hash);
+        for hash in &nested {
+            self.transition_runtime.remove(hash);
         }
-        for hash in disappearing {
-            if let Some(runtime) = self.transition_runtime.get_mut(&hash) {
+        for hash in &disappearing {
+            if let Some(runtime) = self.transition_runtime.get_mut(hash) {
                 if runtime.state != TransitionState::Exiting {
                     runtime.state = TransitionState::Exiting;
                     runtime.initial = runtime.current;
@@ -324,12 +398,13 @@ impl Engine {
 
         let target_result = self.layout_pass(&tree, size);
         let viewport_changed = self.previous_viewport.is_some_and(|old| old != size);
-        let appeared_ids: HashSet<_> = target_result
-            .elements
-            .keys()
-            .filter(|id| !self.previous_tree_ids.contains(*id))
-            .cloned()
-            .collect();
+        appeared_ids.extend(
+            target_result
+                .elements
+                .keys()
+                .filter(|id| !self.previous_tree_ids.contains(*id))
+                .cloned(),
+        );
 
         for info in &transition_nodes {
             let Some(element) = target_result.elements.get(&info.key) else {
@@ -423,6 +498,21 @@ impl Engine {
             }
         }
 
+        transition_nodes.clear();
+        current_hashes.clear();
+        current_transition_hashes.clear();
+        current_tree_ids.clear();
+        disappearing.clear();
+        nested.clear();
+        appeared_ids.clear();
+        self.scratch_transition_nodes = transition_nodes;
+        self.scratch_current_hashes = current_hashes;
+        self.scratch_current_transition_hashes = current_transition_hashes;
+        self.scratch_current_tree_ids = current_tree_ids;
+        self.scratch_disappearing = disappearing;
+        self.scratch_nested = nested;
+        self.scratch_appeared_ids = appeared_ids;
+
         for runtime in self.transition_runtime.values_mut() {
             if runtime.state != TransitionState::Idle
                 && !(runtime.state == TransitionState::Entering && runtime.elapsed == 0.0)
@@ -452,6 +542,21 @@ impl Engine {
             }
         }
 
+        let has_active_transitions = self
+            .transition_runtime
+            .values()
+            .any(|runtime| runtime.state != TransitionState::Idle);
+        let next_tree_ids = target_result.elements.keys().cloned().collect();
+        if !has_active_transitions {
+            let mut result = target_result;
+            strip_internal_ids(&mut result);
+            result.errors.extend(errors);
+            self.finish_layout(&mut result, size);
+            self.previous_tree_ids = next_tree_ids;
+            self.previous_viewport = Some(size);
+            return result;
+        }
+
         apply_transition_values(
             &mut tree,
             &self.transition_runtime,
@@ -459,18 +564,89 @@ impl Engine {
             &mut self.transition_non_interactive,
         );
         let mut result = self.layout_pass(&tree, size);
+        result.needs_animation_frame = true;
         strip_internal_ids(&mut result);
         result.errors.extend(errors);
         self.finish_layout(&mut result, size);
-        self.previous_tree_ids = target_result.elements.keys().cloned().collect();
+        self.previous_tree_ids = next_tree_ids;
         self.previous_viewport = Some(size);
         result
     }
 
+    pub(crate) fn layout_frame(
+        &mut self,
+        nodes: &mut [FrameNode],
+        size: Size,
+        delta_time: f32,
+    ) -> Option<LayoutResult> {
+        if nodes.is_empty() || !self.transition_runtime.is_empty() {
+            return None;
+        }
+
+        let _delta_time = if delta_time.is_finite() && delta_time > 0.0 {
+            delta_time
+        } else {
+            0.0
+        };
+        self.transition_bounds.clear();
+        self.transition_non_interactive.clear();
+        self.transition_exiting.clear();
+
+        let mut hashes = std::mem::take(&mut self.scratch_current_hashes);
+        hashes.clear();
+        if !can_layout_plain_frame_fast(nodes, 0, &mut hashes) {
+            hashes.clear();
+            self.scratch_current_hashes = hashes;
+            return None;
+        }
+
+        let mut result = self.layout_frame_pass(nodes, size);
+        self.finish_layout(&mut result, size);
+        if !self.previous_tree_ids.is_empty() {
+            self.previous_tree_ids = result.elements.keys().cloned().collect();
+        }
+        self.previous_viewport = Some(size);
+
+        hashes.clear();
+        self.scratch_current_hashes = hashes;
+        Some(result)
+    }
+
     fn layout_pass(&mut self, root: &Node, size: Size) -> LayoutResult {
-        let mut result = LayoutResult::default();
+        let node_count = count_nodes(root);
+        let mut result = LayoutResult {
+            commands: Vec::with_capacity(node_count),
+            elements: std::collections::HashMap::with_capacity(node_count),
+            scroll_containers: std::collections::HashMap::new(),
+            pointers: Vec::new(),
+            errors: Vec::new(),
+            needs_animation_frame: false,
+            hit_order: Vec::with_capacity(node_count),
+        };
         let root_bounds = Rect::new(0.0, 0.0, size.width, size.height);
         self.layout_node(root, root_bounds, root_bounds, &mut result);
+        result
+    }
+
+    fn layout_frame_pass(&mut self, nodes: &mut [FrameNode], size: Size) -> LayoutResult {
+        let mut result = LayoutResult {
+            commands: Vec::with_capacity(nodes.len()),
+            elements: std::collections::HashMap::with_capacity(nodes.len()),
+            scroll_containers: std::collections::HashMap::new(),
+            pointers: Vec::new(),
+            errors: Vec::new(),
+            needs_animation_frame: false,
+            hit_order: Vec::with_capacity(nodes.len()),
+        };
+        let root_bounds = Rect::new(0.0, 0.0, size.width, size.height);
+        self.layout_frame_node_clipped(
+            nodes,
+            0,
+            root_bounds,
+            root_bounds,
+            ClipRegion::default(),
+            &mut result,
+        );
         result
     }
 
@@ -511,6 +687,7 @@ impl Engine {
             })
             .collect();
         self.scroll.finish_layout_frame(&mut self.input, result);
+        result.needs_animation_frame |= self.scroll.needs_animation_frame();
         self.input.end_frame();
         if self.debug {
             result.commands.push(RenderCommand {
@@ -567,6 +744,157 @@ impl Engine {
         result: &mut LayoutResult,
     ) {
         self.layout_node_clipped(node, bounds, viewport, ClipRegion::default(), result);
+    }
+
+    fn layout_frame_node_clipped(
+        &mut self,
+        nodes: &mut [FrameNode],
+        index: usize,
+        bounds: Rect,
+        viewport: Rect,
+        parent_clip: ClipRegion,
+        result: &mut LayoutResult,
+    ) {
+        let node = &nodes[index].node;
+        let id = node.id.clone();
+        let element_id = node.element_id.clone();
+        let background = node.background;
+        let border = node.border;
+        let overlay = node.overlay;
+        let custom = node.custom;
+        let clip_x = node.clip_x || node.scroll_x;
+        let clip_y = node.clip_y || node.scroll_y;
+        let current_clip = parent_clip.add(bounds, clip_x, clip_y);
+        let hit_bounds = parent_clip.apply(bounds);
+        let culled = self.culling && bounds.intersection(viewport).is_none();
+
+        let hit_testable = node
+            .floating
+            .as_ref()
+            .is_none_or(|floating| floating.pointer_capture == PointerCapture::Capture);
+
+        if let Some(id) = &id {
+            result.elements.insert(
+                id.clone(),
+                ElementData {
+                    bounds,
+                    element_id: element_id.clone(),
+                },
+            );
+            if hit_testable && let Some(bounds) = hit_bounds {
+                result.hit_order.push(HitEntry {
+                    id: id.clone(),
+                    bounds,
+                });
+            }
+        }
+
+        if background.is_visible() && !culled {
+            result.commands.push(RenderCommand {
+                id: id.clone(),
+                bounds,
+                kind: CommandKind::Rectangle {
+                    color: background,
+                    radius: border.radius,
+                },
+            });
+        }
+
+        if (clip_x || clip_y) && !culled {
+            result.commands.push(RenderCommand {
+                id: id.clone(),
+                bounds,
+                kind: CommandKind::ClipStart {
+                    x: clip_x,
+                    y: clip_y,
+                },
+            });
+        }
+
+        if let Some(overlay) = overlay.filter(|_| !culled) {
+            result.commands.push(RenderCommand {
+                id: id.clone(),
+                bounds,
+                kind: CommandKind::OverlayStart(overlay),
+            });
+        }
+
+        if let Some(value) = custom.filter(|_| !culled) {
+            result.commands.push(RenderCommand {
+                id: id.clone(),
+                bounds,
+                kind: CommandKind::Custom(value, border.radius),
+            });
+        }
+
+        if matches!(nodes[index].node.kind, NodeKind::Container) {
+            self.layout_frame_children(nodes, index, bounds, viewport, current_clip, result);
+        } else {
+            match &nodes[index].node.kind {
+                NodeKind::Container => unreachable!("container handled above"),
+                NodeKind::Text { text, style } => {
+                    for (line, line_bounds) in self.text_render_lines(text, style, bounds) {
+                        if culled {
+                            continue;
+                        }
+                        result.commands.push(RenderCommand {
+                            id: id.clone(),
+                            bounds: line_bounds,
+                            kind: CommandKind::Text {
+                                text: line,
+                                style: style.clone(),
+                            },
+                        });
+                    }
+                }
+                NodeKind::Image(image) => {
+                    if !culled {
+                        result.commands.push(RenderCommand {
+                            id: id.clone(),
+                            bounds,
+                            kind: CommandKind::Image(ImageRenderData {
+                                background_color: background,
+                                corner_radius: border.radius,
+                                image_id: image.image_id,
+                            }),
+                        });
+                    }
+                }
+                NodeKind::Custom(value) => {
+                    if !culled {
+                        result.commands.push(RenderCommand {
+                            id: id.clone(),
+                            bounds,
+                            kind: CommandKind::Custom(*value, border.radius),
+                        });
+                    }
+                }
+            }
+        }
+
+        if !culled && (border.width.horizontal() > 0.0 || border.width.vertical() > 0.0) {
+            result.commands.push(RenderCommand {
+                id: id.clone(),
+                bounds,
+                kind: CommandKind::Border(border),
+            });
+        }
+
+        if overlay.is_some() && !culled {
+            result.commands.push(RenderCommand {
+                id: id.clone(),
+                bounds,
+                kind: CommandKind::OverlayEnd,
+            });
+        }
+
+        if (clip_x || clip_y) && !culled {
+            result.commands.push(RenderCommand {
+                id,
+                bounds,
+                kind: CommandKind::ClipEnd,
+            });
+        }
     }
 
     #[allow(clippy::too_many_lines)]
@@ -736,7 +1064,7 @@ impl Engine {
             (bounds.height - node.layout.padding.vertical()).max(0.0),
         );
 
-        let scroll_offset = node
+        let mut scroll_offset = node
             .id
             .as_deref()
             .map_or(Vector::ZERO, |id| self.scroll_offset(id));
@@ -749,6 +1077,27 @@ impl Engine {
             Direction::Row => content.height,
             Direction::Column => content.width,
         };
+
+        if self.transition_exiting.is_empty()
+            && node.children.iter().all(|child| {
+                child.floating.is_none()
+                    && matches!(child.layout.sizing.width, AxisSize::Fixed(_))
+                    && matches!(child.layout.sizing.height, AxisSize::Fixed(_))
+            })
+        {
+            self.layout_fixed_flow_children(
+                node,
+                bounds,
+                viewport,
+                clip,
+                result,
+                content,
+                main_available,
+                cross_available,
+                scroll_offset,
+            );
+            return;
+        }
 
         let normal_children: Vec<_> = node
             .children
@@ -782,6 +1131,39 @@ impl Engine {
                 .iter()
                 .map(|size| main_axis(*size, node.layout.direction))
                 .sum::<f32>();
+        if let Some(id) = &node.id
+            && (node.scroll_x || node.scroll_y)
+        {
+            let content_size = match node.layout.direction {
+                Direction::Row => Size::new(
+                    used_main + node.layout.padding.horizontal(),
+                    cross_available + node.layout.padding.vertical(),
+                ),
+                Direction::Column => Size::new(
+                    cross_available + node.layout.padding.horizontal(),
+                    used_main + node.layout.padding.vertical(),
+                ),
+            };
+            scroll_offset = self.scroll.clamp_offset_to_content(
+                id,
+                scroll_offset,
+                node.scroll_x,
+                node.scroll_y,
+                bounds,
+                content_size,
+            );
+            result.scroll_containers.insert(
+                id.clone(),
+                ScrollData {
+                    bounds,
+                    content_size,
+                    offset: scroll_offset,
+                    scroll_x: node.scroll_x,
+                    scroll_y: node.scroll_y,
+                },
+            );
+        }
+
         let mut cursor = match node.layout.direction {
             Direction::Row => match node.layout.align_x {
                 AlignX::Left => content.x - scroll_offset.x,
@@ -802,31 +1184,6 @@ impl Engine {
                 }
             },
         };
-
-        if let Some(id) = &node.id
-            && (node.scroll_x || node.scroll_y)
-        {
-            let content_size = match node.layout.direction {
-                Direction::Row => Size::new(
-                    used_main + node.layout.padding.horizontal(),
-                    cross_available + node.layout.padding.vertical(),
-                ),
-                Direction::Column => Size::new(
-                    cross_available + node.layout.padding.horizontal(),
-                    used_main + node.layout.padding.vertical(),
-                ),
-            };
-            result.scroll_containers.insert(
-                id.clone(),
-                ScrollData {
-                    bounds,
-                    content_size,
-                    offset: scroll_offset,
-                    scroll_x: node.scroll_x,
-                    scroll_y: node.scroll_y,
-                },
-            );
-        }
 
         let mut child_sizes = flow_children.into_iter().zip(child_sizes);
         for child in normal_children {
@@ -918,6 +1275,616 @@ impl Engine {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn layout_frame_children(
+        &mut self,
+        nodes: &mut [FrameNode],
+        index: usize,
+        bounds: Rect,
+        viewport: Rect,
+        clip: ClipRegion,
+        result: &mut LayoutResult,
+    ) {
+        let node = &nodes[index].node;
+        let content = Rect::new(
+            bounds.x + node.layout.padding.left,
+            bounds.y + node.layout.padding.top,
+            (bounds.width - node.layout.padding.horizontal()).max(0.0),
+            (bounds.height - node.layout.padding.vertical()).max(0.0),
+        );
+        let scroll_offset = node
+            .id
+            .as_deref()
+            .map_or(Vector::ZERO, |id| self.scroll_offset(id));
+        let main_available = match node.layout.direction {
+            Direction::Row => content.width,
+            Direction::Column => content.height,
+        };
+        let cross_available = match node.layout.direction {
+            Direction::Row => content.height,
+            Direction::Column => content.width,
+        };
+
+        if frame_children_all_fixed(nodes, index) {
+            self.layout_frame_fixed_flow_children(
+                nodes,
+                index,
+                bounds,
+                viewport,
+                clip,
+                result,
+                content,
+                main_available,
+                cross_available,
+                scroll_offset,
+            );
+            return;
+        }
+
+        let Some(child_index) = nodes[index].first_child else {
+            return;
+        };
+        debug_assert_eq!(nodes[index].child_count, 1);
+        let child = &nodes[child_index].node;
+        let fit = self.frame_intrinsic_size(nodes, child_index).preferred;
+        let child_size = self.resolve_child_size(
+            child,
+            fit,
+            content.width,
+            content.height,
+            None,
+            node.layout.direction,
+        );
+        let cross_offset = match node.layout.direction {
+            Direction::Row => match node.layout.align_y {
+                AlignY::Top => 0.0,
+                AlignY::Center => (cross_available - child_size.height).max(0.0) / 2.0,
+                AlignY::Bottom => (cross_available - child_size.height).max(0.0),
+            },
+            Direction::Column => match node.layout.align_x {
+                AlignX::Left => 0.0,
+                AlignX::Center => (cross_available - child_size.width).max(0.0) / 2.0,
+                AlignX::Right => (cross_available - child_size.width).max(0.0),
+            },
+        };
+        let cursor = match node.layout.direction {
+            Direction::Row => match node.layout.align_x {
+                AlignX::Left => content.x - scroll_offset.x,
+                AlignX::Center => {
+                    content.x + (main_available - child_size.width).max(0.0) / 2.0 - scroll_offset.x
+                }
+                AlignX::Right => {
+                    content.x + (main_available - child_size.width).max(0.0) - scroll_offset.x
+                }
+            },
+            Direction::Column => match node.layout.align_y {
+                AlignY::Top => content.y - scroll_offset.y,
+                AlignY::Center => {
+                    content.y + (main_available - child_size.height).max(0.0) / 2.0
+                        - scroll_offset.y
+                }
+                AlignY::Bottom => {
+                    content.y + (main_available - child_size.height).max(0.0) - scroll_offset.y
+                }
+            },
+        };
+        let child_bounds = match node.layout.direction {
+            Direction::Row => Rect::new(
+                cursor,
+                content.y + cross_offset,
+                child_size.width,
+                child_size.height,
+            ),
+            Direction::Column => Rect::new(
+                content.x + cross_offset,
+                cursor,
+                child_size.width,
+                child_size.height,
+            ),
+        };
+        if !self.layout_frame_simple_text_leaf(
+            nodes,
+            child_index,
+            child_bounds,
+            viewport,
+            clip,
+            result,
+        ) {
+            self.layout_frame_node_clipped(
+                nodes,
+                child_index,
+                child_bounds,
+                viewport,
+                clip,
+                result,
+            );
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn layout_frame_fixed_flow_children(
+        &mut self,
+        nodes: &mut [FrameNode],
+        index: usize,
+        bounds: Rect,
+        viewport: Rect,
+        clip: ClipRegion,
+        result: &mut LayoutResult,
+        content: Rect,
+        main_available: f32,
+        cross_available: f32,
+        mut scroll_offset: Vector,
+    ) {
+        let direction = nodes[index].node.layout.direction;
+        let gap = nodes[index].node.layout.gap;
+        let padding = nodes[index].node.layout.padding;
+        let align_x = nodes[index].node.layout.align_x;
+        let align_y = nodes[index].node.layout.align_y;
+        let scroll_x = nodes[index].node.scroll_x;
+        let scroll_y = nodes[index].node.scroll_y;
+        let id = nodes[index].node.id.clone();
+        let used_main = gap * nodes[index].child_count.saturating_sub(1) as f32
+            + frame_child_indices(nodes, index)
+                .map(|child_index| main_axis(fixed_node_size(&nodes[child_index].node), direction))
+                .sum::<f32>();
+        if let Some(id) = &id
+            && (scroll_x || scroll_y)
+        {
+            let content_size = match direction {
+                Direction::Row => Size::new(
+                    used_main + padding.horizontal(),
+                    cross_available + padding.vertical(),
+                ),
+                Direction::Column => Size::new(
+                    cross_available + padding.horizontal(),
+                    used_main + padding.vertical(),
+                ),
+            };
+            scroll_offset = self.scroll.clamp_offset_to_content(
+                id,
+                scroll_offset,
+                scroll_x,
+                scroll_y,
+                bounds,
+                content_size,
+            );
+            result.scroll_containers.insert(
+                id.clone(),
+                ScrollData {
+                    bounds,
+                    content_size,
+                    offset: scroll_offset,
+                    scroll_x,
+                    scroll_y,
+                },
+            );
+        }
+
+        let mut cursor = match direction {
+            Direction::Row => match align_x {
+                AlignX::Left => content.x - scroll_offset.x,
+                AlignX::Center => {
+                    content.x + (main_available - used_main).max(0.0) / 2.0 - scroll_offset.x
+                }
+                AlignX::Right => {
+                    content.x + (main_available - used_main).max(0.0) - scroll_offset.x
+                }
+            },
+            Direction::Column => match align_y {
+                AlignY::Top => content.y - scroll_offset.y,
+                AlignY::Center => {
+                    content.y + (main_available - used_main).max(0.0) / 2.0 - scroll_offset.y
+                }
+                AlignY::Bottom => {
+                    content.y + (main_available - used_main).max(0.0) - scroll_offset.y
+                }
+            },
+        };
+
+        let mut child_index = nodes[index].first_child;
+        while let Some(child_index_value) = child_index {
+            let next_child = nodes[child_index_value].next_sibling;
+            let child = &nodes[child_index_value].node;
+            let child_size = fixed_node_size(child);
+            let cross_offset = match direction {
+                Direction::Row => match align_y {
+                    AlignY::Top => 0.0,
+                    AlignY::Center => (cross_available - child_size.height).max(0.0) / 2.0,
+                    AlignY::Bottom => (cross_available - child_size.height).max(0.0),
+                },
+                Direction::Column => match align_x {
+                    AlignX::Left => 0.0,
+                    AlignX::Center => (cross_available - child_size.width).max(0.0) / 2.0,
+                    AlignX::Right => (cross_available - child_size.width).max(0.0),
+                },
+            };
+            let child_bounds = match direction {
+                Direction::Row => Rect::new(
+                    cursor,
+                    content.y + cross_offset,
+                    child_size.width,
+                    child_size.height,
+                ),
+                Direction::Column => Rect::new(
+                    content.x + cross_offset,
+                    cursor,
+                    child_size.width,
+                    child_size.height,
+                ),
+            };
+            if !self.layout_frame_fixed_container_with_text_child(
+                nodes,
+                child_index_value,
+                child_bounds,
+                viewport,
+                clip,
+                result,
+            ) && !self.layout_frame_simple_text_leaf(
+                nodes,
+                child_index_value,
+                child_bounds,
+                viewport,
+                clip,
+                result,
+            ) {
+                self.layout_frame_node_clipped(
+                    nodes,
+                    child_index_value,
+                    child_bounds,
+                    viewport,
+                    clip,
+                    result,
+                );
+            }
+            cursor += main_axis(child_size, direction) + gap;
+            child_index = next_child;
+        }
+    }
+
+    fn layout_frame_fixed_container_with_text_child(
+        &mut self,
+        nodes: &mut [FrameNode],
+        index: usize,
+        bounds: Rect,
+        viewport: Rect,
+        parent_clip: ClipRegion,
+        result: &mut LayoutResult,
+    ) -> bool {
+        let node = &nodes[index].node;
+        if nodes[index].inline_text.is_none()
+            || nodes[index].child_count != 0
+            || !matches!(node.kind, NodeKind::Container)
+            || node.clip_x
+            || node.clip_y
+            || node.scroll_x
+            || node.scroll_y
+            || node.background.is_visible()
+            || node.overlay.is_some()
+            || node.custom.is_some()
+            || node.floating.is_some()
+            || node.border.width.horizontal() > 0.0
+            || node.border.width.vertical() > 0.0
+        {
+            return false;
+        }
+        let hit_bounds = parent_clip.apply(bounds);
+        let id = nodes[index].node.id.take();
+        let element_id = nodes[index].node.element_id.take();
+        if let Some(id) = &id {
+            result
+                .elements
+                .insert(id.clone(), ElementData { bounds, element_id });
+            if let Some(bounds) = hit_bounds {
+                result.hit_order.push(HitEntry {
+                    id: id.clone(),
+                    bounds,
+                });
+            }
+        }
+
+        let content = Rect::new(
+            bounds.x + nodes[index].node.layout.padding.left,
+            bounds.y + nodes[index].node.layout.padding.top,
+            (bounds.width - nodes[index].node.layout.padding.horizontal()).max(0.0),
+            (bounds.height - nodes[index].node.layout.padding.vertical()).max(0.0),
+        );
+        let Some((text, style)) = nodes[index].inline_text.take() else {
+            unreachable!("inline text checked above");
+        };
+        self.emit_simple_text(None, text, style, content, viewport, result)
+    }
+
+    fn layout_frame_simple_text_leaf(
+        &mut self,
+        nodes: &mut [FrameNode],
+        index: usize,
+        bounds: Rect,
+        viewport: Rect,
+        parent_clip: ClipRegion,
+        result: &mut LayoutResult,
+    ) -> bool {
+        let node = &nodes[index].node;
+        if nodes[index].child_count != 0
+            || node.clip_x
+            || node.clip_y
+            || node.scroll_x
+            || node.scroll_y
+            || node.background.is_visible()
+            || node.overlay.is_some()
+            || node.custom.is_some()
+            || node.floating.is_some()
+            || node.border.width.horizontal() > 0.0
+            || node.border.width.vertical() > 0.0
+        {
+            return false;
+        }
+
+        let NodeKind::Text { text, style } = &node.kind else {
+            return false;
+        };
+        if text.contains('\n') {
+            return false;
+        }
+        let width = self.measure_text_cached(text, style).width;
+        if style.wrap == TextWrap::Words && width > bounds.width {
+            return false;
+        }
+
+        let hit_bounds = parent_clip.apply(bounds);
+        let culled = self.culling && bounds.intersection(viewport).is_none();
+        let id = nodes[index].node.id.take();
+        let element_id = nodes[index].node.element_id.take();
+        if let Some(id) = &id {
+            result
+                .elements
+                .insert(id.clone(), ElementData { bounds, element_id });
+            if let Some(bounds) = hit_bounds {
+                result.hit_order.push(HitEntry {
+                    id: id.clone(),
+                    bounds,
+                });
+            }
+        }
+
+        if !culled {
+            let NodeKind::Text { text, style } = &mut nodes[index].node.kind else {
+                unreachable!("text kind checked above");
+            };
+            self.emit_text_line(id, std::mem::take(text), style.clone(), bounds, result);
+        }
+        true
+    }
+
+    fn emit_simple_text(
+        &mut self,
+        id: Option<String>,
+        text: String,
+        style: TextStyle,
+        bounds: Rect,
+        viewport: Rect,
+        result: &mut LayoutResult,
+    ) -> bool {
+        if text.contains('\n') {
+            return false;
+        }
+        let width = self.measure_text_cached(&text, &style).width;
+        if style.wrap == TextWrap::Words && width > bounds.width {
+            return false;
+        }
+        if self.culling && bounds.intersection(viewport).is_none() {
+            return true;
+        }
+        self.emit_text_line(id, text, style, bounds, result);
+        true
+    }
+
+    fn emit_text_line(
+        &mut self,
+        id: Option<String>,
+        text: String,
+        style: TextStyle,
+        bounds: Rect,
+        result: &mut LayoutResult,
+    ) {
+        let (text, bounds) = self.overflow_text_line(text, &style, bounds);
+        result.commands.push(RenderCommand {
+            id,
+            bounds,
+            kind: CommandKind::Text { text, style },
+        });
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn layout_fixed_flow_children(
+        &mut self,
+        node: &Node,
+        bounds: Rect,
+        viewport: Rect,
+        clip: ClipRegion,
+        result: &mut LayoutResult,
+        content: Rect,
+        main_available: f32,
+        cross_available: f32,
+        mut scroll_offset: Vector,
+    ) {
+        let used_main = node.layout.gap * node.children.len().saturating_sub(1) as f32
+            + node
+                .children
+                .iter()
+                .map(|child| main_axis(fixed_node_size(child), node.layout.direction))
+                .sum::<f32>();
+        if let Some(id) = &node.id
+            && (node.scroll_x || node.scroll_y)
+        {
+            let content_size = match node.layout.direction {
+                Direction::Row => Size::new(
+                    used_main + node.layout.padding.horizontal(),
+                    cross_available + node.layout.padding.vertical(),
+                ),
+                Direction::Column => Size::new(
+                    cross_available + node.layout.padding.horizontal(),
+                    used_main + node.layout.padding.vertical(),
+                ),
+            };
+            scroll_offset = self.scroll.clamp_offset_to_content(
+                id,
+                scroll_offset,
+                node.scroll_x,
+                node.scroll_y,
+                bounds,
+                content_size,
+            );
+            result.scroll_containers.insert(
+                id.clone(),
+                ScrollData {
+                    bounds,
+                    content_size,
+                    offset: scroll_offset,
+                    scroll_x: node.scroll_x,
+                    scroll_y: node.scroll_y,
+                },
+            );
+        }
+
+        let mut cursor = match node.layout.direction {
+            Direction::Row => match node.layout.align_x {
+                AlignX::Left => content.x - scroll_offset.x,
+                AlignX::Center => {
+                    content.x + (main_available - used_main).max(0.0) / 2.0 - scroll_offset.x
+                }
+                AlignX::Right => {
+                    content.x + (main_available - used_main).max(0.0) - scroll_offset.x
+                }
+            },
+            Direction::Column => match node.layout.align_y {
+                AlignY::Top => content.y - scroll_offset.y,
+                AlignY::Center => {
+                    content.y + (main_available - used_main).max(0.0) / 2.0 - scroll_offset.y
+                }
+                AlignY::Bottom => {
+                    content.y + (main_available - used_main).max(0.0) - scroll_offset.y
+                }
+            },
+        };
+
+        for child in &node.children {
+            let child_size = fixed_node_size(child);
+            let cross_offset = match node.layout.direction {
+                Direction::Row => match node.layout.align_y {
+                    AlignY::Top => 0.0,
+                    AlignY::Center => (cross_available - child_size.height).max(0.0) / 2.0,
+                    AlignY::Bottom => (cross_available - child_size.height).max(0.0),
+                },
+                Direction::Column => match node.layout.align_x {
+                    AlignX::Left => 0.0,
+                    AlignX::Center => (cross_available - child_size.width).max(0.0) / 2.0,
+                    AlignX::Right => (cross_available - child_size.width).max(0.0),
+                },
+            };
+
+            let child_bounds = match node.layout.direction {
+                Direction::Row => Rect::new(
+                    cursor,
+                    content.y + cross_offset,
+                    child_size.width,
+                    child_size.height,
+                ),
+                Direction::Column => Rect::new(
+                    content.x + cross_offset,
+                    cursor,
+                    child_size.width,
+                    child_size.height,
+                ),
+            };
+
+            if !self.layout_fixed_container_with_text_child(
+                child,
+                child_bounds,
+                viewport,
+                clip,
+                result,
+            ) {
+                self.layout_node_clipped(child, child_bounds, viewport, clip, result);
+            }
+            cursor += main_axis(child_size, node.layout.direction) + node.layout.gap;
+        }
+    }
+
+    fn layout_fixed_container_with_text_child(
+        &mut self,
+        node: &Node,
+        bounds: Rect,
+        viewport: Rect,
+        parent_clip: ClipRegion,
+        result: &mut LayoutResult,
+    ) -> bool {
+        if node.children.len() != 1
+            || !matches!(node.kind, NodeKind::Container)
+            || node.clip_x
+            || node.clip_y
+            || node.scroll_x
+            || node.scroll_y
+            || node.background.is_visible()
+            || node.overlay.is_some()
+            || node.custom.is_some()
+            || node.floating.is_some()
+            || node.border.width.horizontal() > 0.0
+            || node.border.width.vertical() > 0.0
+        {
+            return false;
+        }
+        let child = &node.children[0];
+        if child.id.is_some()
+            || child.element_id.is_some()
+            || child.floating.is_some()
+            || !matches!(child.kind, NodeKind::Text { .. })
+        {
+            return false;
+        }
+
+        let hit_bounds = parent_clip.apply(bounds);
+        let culled = self.culling && bounds.intersection(viewport).is_none();
+        if let Some(id) = &node.id {
+            result.elements.insert(
+                id.clone(),
+                ElementData {
+                    bounds,
+                    element_id: node.element_id.clone(),
+                },
+            );
+            if let Some(bounds) = hit_bounds {
+                result.hit_order.push(HitEntry {
+                    id: id.clone(),
+                    bounds,
+                });
+            }
+        }
+        if culled {
+            return true;
+        }
+
+        let content = Rect::new(
+            bounds.x + node.layout.padding.left,
+            bounds.y + node.layout.padding.top,
+            (bounds.width - node.layout.padding.horizontal()).max(0.0),
+            (bounds.height - node.layout.padding.vertical()).max(0.0),
+        );
+        let NodeKind::Text { text, style } = &child.kind else {
+            unreachable!("text kind checked above");
+        };
+        for (line, line_bounds) in self.text_render_lines(text, style, content) {
+            result.commands.push(RenderCommand {
+                id: None,
+                bounds: line_bounds,
+                kind: CommandKind::Text {
+                    text: line,
+                    style: style.clone(),
+                },
+            });
+        }
+        true
+    }
+
     fn resolve_child_size(
         &mut self,
         child: &Node,
@@ -979,6 +1946,16 @@ impl Engine {
 
     #[allow(clippy::too_many_lines)]
     fn intrinsic_size(&mut self, node: &Node) -> IntrinsicSize {
+        if let (AxisSize::Fixed(width), AxisSize::Fixed(height)) =
+            (node.layout.sizing.width, node.layout.sizing.height)
+        {
+            let size = Size::new(width, height);
+            return IntrinsicSize {
+                preferred: size,
+                minimum: size,
+            };
+        }
+
         match &node.kind {
             NodeKind::Text { text, style } => {
                 let preferred_width = text
@@ -1027,6 +2004,127 @@ impl Engine {
                     .collect();
                 for (index, child) in children.into_iter().enumerate() {
                     let size = self.intrinsic_size(child);
+                    if index > 0 {
+                        preferred_main += node.layout.gap;
+                        minimum_main += node.layout.gap;
+                    }
+                    match node.layout.direction {
+                        Direction::Row => {
+                            preferred_main +=
+                                intrinsic_axis(child.layout.sizing.width, size.preferred.width);
+                            preferred_cross = preferred_cross.max(intrinsic_axis(
+                                child.layout.sizing.height,
+                                size.preferred.height,
+                            ));
+                            if !node.clip_x && !node.scroll_x {
+                                minimum_main +=
+                                    minimum_axis(child.layout.sizing.width, size.minimum.width);
+                            }
+                            if !node.clip_y && !node.scroll_y {
+                                minimum_cross = minimum_cross.max(minimum_axis(
+                                    child.layout.sizing.height,
+                                    size.minimum.height,
+                                ));
+                            }
+                        }
+                        Direction::Column => {
+                            preferred_main +=
+                                intrinsic_axis(child.layout.sizing.height, size.preferred.height);
+                            preferred_cross = preferred_cross.max(intrinsic_axis(
+                                child.layout.sizing.width,
+                                size.preferred.width,
+                            ));
+                            if !node.clip_y && !node.scroll_y {
+                                minimum_main +=
+                                    minimum_axis(child.layout.sizing.height, size.minimum.height);
+                            }
+                            if !node.clip_x && !node.scroll_x {
+                                minimum_cross = minimum_cross.max(minimum_axis(
+                                    child.layout.sizing.width,
+                                    size.minimum.width,
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                let (preferred, minimum) = match node.layout.direction {
+                    Direction::Row => (
+                        Size::new(
+                            preferred_main + node.layout.padding.horizontal(),
+                            preferred_cross + node.layout.padding.vertical(),
+                        ),
+                        Size::new(
+                            minimum_main + node.layout.padding.horizontal(),
+                            minimum_cross + node.layout.padding.vertical(),
+                        ),
+                    ),
+                    Direction::Column => (
+                        Size::new(
+                            preferred_cross + node.layout.padding.horizontal(),
+                            preferred_main + node.layout.padding.vertical(),
+                        ),
+                        Size::new(
+                            minimum_cross + node.layout.padding.horizontal(),
+                            minimum_main + node.layout.padding.vertical(),
+                        ),
+                    ),
+                };
+                IntrinsicSize { preferred, minimum }
+            }
+        }
+    }
+
+    fn frame_intrinsic_size(&mut self, nodes: &[FrameNode], index: usize) -> IntrinsicSize {
+        let node = &nodes[index].node;
+        if let (AxisSize::Fixed(width), AxisSize::Fixed(height)) =
+            (node.layout.sizing.width, node.layout.sizing.height)
+        {
+            let size = Size::new(width, height);
+            return IntrinsicSize {
+                preferred: size,
+                minimum: size,
+            };
+        }
+
+        match &node.kind {
+            NodeKind::Text { text, style } => {
+                let preferred_width = text
+                    .split('\n')
+                    .map(|line| self.measure_text_cached(line, style).width)
+                    .fold(0.0, f32::max);
+                let minimum_width = if style.wrap == TextWrap::Words {
+                    text.split_whitespace()
+                        .map(|word| self.measure_text_cached(word, style).width)
+                        .fold(0.0, f32::max)
+                } else {
+                    preferred_width
+                };
+                let height = resolved_line_height(style);
+                IntrinsicSize {
+                    preferred: Size::new(preferred_width, height),
+                    minimum: Size::new(minimum_width, height),
+                }
+            }
+            NodeKind::Image(_) | NodeKind::Custom(_) => {
+                let mut preferred = Size::new(
+                    intrinsic_axis(node.layout.sizing.width, 0.0),
+                    intrinsic_axis(node.layout.sizing.height, 0.0),
+                );
+                update_aspect_ratio_size(&mut preferred, node.aspect_ratio);
+                IntrinsicSize {
+                    preferred,
+                    minimum: preferred,
+                }
+            }
+            NodeKind::Container => {
+                let mut preferred_main: f32 = 0.0;
+                let mut preferred_cross: f32 = 0.0;
+                let mut minimum_main: f32 = 0.0;
+                let mut minimum_cross: f32 = 0.0;
+                for (index, child_index) in frame_child_indices(nodes, index).enumerate() {
+                    let child = &nodes[child_index].node;
+                    let size = self.frame_intrinsic_size(nodes, child_index);
                     if index > 0 {
                         preferred_main += node.layout.gap;
                         minimum_main += node.layout.gap;
@@ -1304,26 +2402,143 @@ impl Engine {
         style: &TextStyle,
         bounds: Rect,
     ) -> Vec<(String, Rect)> {
-        let lines = self.wrap_text(text, style, bounds.width);
-        let line_height = resolved_line_height(style);
-        lines
+        self.text_block_layout(text, style, bounds)
+            .lines
             .into_iter()
-            .enumerate()
-            .map(|(index, line)| {
-                let width = self.measure_text_cached(&line, style).width;
-                let x = match style.align {
-                    TextAlign::Left => bounds.x,
-                    TextAlign::Center => bounds.x + (bounds.width - width).max(0.0) / 2.0,
-                    TextAlign::Right => bounds.x + (bounds.width - width).max(0.0),
-                };
-                (
-                    line,
-                    Rect::new(x, bounds.y + index as f32 * line_height, width, line_height),
-                )
-            })
+            .map(|line| (line.text, line.bounds))
             .collect()
     }
 
+    fn overflow_text_line(
+        &mut self,
+        text: String,
+        style: &TextStyle,
+        bounds: Rect,
+    ) -> (String, Rect) {
+        let measured_width = self.measure_text_cached(&text, style).width;
+        let available_width = bounds.width.max(0.0);
+        let (text, width) = match style.text_overflow {
+            TextOverflowMode::Visible => (text, measured_width),
+            TextOverflowMode::Cut => (text, measured_width.min(available_width)),
+            TextOverflowMode::Ellipsis if measured_width > available_width => {
+                self.ellipsize_text(&text, style, available_width)
+            }
+            TextOverflowMode::Ellipsis => (text, measured_width),
+        };
+        let x = match style.align {
+            TextAlign::Left => bounds.x,
+            TextAlign::Center => bounds.x + (bounds.width - width).max(0.0) / 2.0,
+            TextAlign::Right => bounds.x + (bounds.width - width).max(0.0),
+        };
+        (text, Rect::new(x, bounds.y, width, bounds.height))
+    }
+
+    fn ellipsize_text(
+        &mut self,
+        text: &str,
+        style: &TextStyle,
+        max_width: f32,
+    ) -> (String, f32) {
+        const ELLIPSIS: &str = "...";
+        if max_width <= 0.0 {
+            return (String::new(), 0.0);
+        }
+
+        let ellipsis_width = self.measure_text_cached(ELLIPSIS, style).width;
+        if ellipsis_width >= max_width {
+            return (ELLIPSIS.to_owned(), ellipsis_width.min(max_width));
+        }
+
+        let mut result = String::new();
+        let mut width = ellipsis_width;
+        for (byte_index, _) in text.char_indices().skip(1) {
+            let candidate = &text[..byte_index];
+            let candidate_width = self.measure_text_cached(candidate, style).width + ellipsis_width;
+            if candidate_width > max_width {
+                break;
+            }
+            result.clear();
+            result.push_str(candidate);
+            width = candidate_width;
+        }
+        result.push_str(ELLIPSIS);
+        (result, width)
+    }
+fn text_block_layout(
+    &mut self,
+    text: &str,
+    style: &TextStyle,
+    bounds: Rect,
+) -> TextBlockLayout {
+    let line_height = resolved_line_height(style);
+
+    if line_height <= 0.0 || bounds.width <= 0.0 || bounds.height <= 0.0 {
+        return TextBlockLayout {
+            lines: Vec::new(),
+            size: Size::new(0.0, 0.0),
+            did_truncate: !text.is_empty(),
+        };
+    }
+
+    let mut lines = if !text.contains('\n') {
+        let width = self.measure_text_cached(text, style).width;
+        if style.wrap != TextWrap::Words || width <= bounds.width {
+            vec![text.to_owned()]
+        } else {
+            self.wrap_text(text, style, bounds.width)
+        }
+    } else {
+        self.wrap_text(text, style, bounds.width)
+    };
+
+    let max_lines = (bounds.height / line_height).floor() as usize;
+    let mut did_truncate = false;
+
+    if matches!(style.text_overflow, TextOverflowMode::Cut | TextOverflowMode::Ellipsis)
+        && lines.len() > max_lines
+    {
+        did_truncate = true;
+        lines.truncate(max_lines);
+
+        if style.text_overflow == TextOverflowMode::Ellipsis {
+            if let Some(last) = lines.last_mut() {
+                let (ellipsized, _) = self.ellipsize_text(last, style, bounds.width);
+                *last = ellipsized;
+            }
+        }
+    }
+
+    let mut max_line_width: f32 = 0.0;
+
+    let lines: Vec<_> = lines
+        .into_iter()
+        .enumerate()
+        .map(|(index, line)| {
+            let line_bounds = Rect::new(
+                bounds.x,
+                bounds.y + index as f32 * line_height,
+                bounds.width,
+                line_height,
+            );
+
+            let (line, line_bounds) = self.overflow_text_line(line, style, line_bounds);
+            max_line_width = max_line_width.max(line_bounds.width);
+
+            TextLayoutLine {
+                text: line,
+                bounds: line_bounds,
+            }
+        })
+        .collect();
+
+    let height = lines.len() as f32 * line_height;
+
+    TextBlockLayout {
+        lines,
+        size: Size::new(max_line_width.min(bounds.width), height),
+        did_truncate,
+    }
+}
     fn text_layout_size(&mut self, text: &str, style: &TextStyle, max_width: f32) -> Size {
         let lines = self.wrap_text(text, style, max_width);
         let width = lines
@@ -1460,6 +2675,90 @@ fn normalize_tree(
     if !normalize_node(node, path, "", 0, transitions, hashes, errors) {
         *node = Node::new();
     }
+}
+
+fn can_use_plain_layout(node: &Node, hashes: &mut HashSet<u32>) -> bool {
+    if node
+        .id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("__rlay_"))
+        || node.transition.is_some()
+    {
+        return false;
+    }
+    if let Some(element_id) = &node.element_id
+        && !hashes.insert(element_id.hash)
+    {
+        return false;
+    }
+    node.children
+        .iter()
+        .all(|child| can_use_plain_layout(child, hashes))
+}
+
+fn can_layout_plain_frame_fast(
+    nodes: &[FrameNode],
+    index: usize,
+    hashes: &mut HashSet<u32>,
+) -> bool {
+    let Some(frame_node) = nodes.get(index) else {
+        return false;
+    };
+    let node = &frame_node.node;
+    if node
+        .id
+        .as_deref()
+        .is_some_and(|id| id.starts_with("__rlay_"))
+        || node.transition.is_some()
+    {
+        return false;
+    }
+    if let Some(element_id) = &node.element_id
+        && !hashes.insert(element_id.hash)
+    {
+        return false;
+    }
+    if !matches!(node.kind, NodeKind::Container) {
+        return true;
+    }
+    if frame_child_indices(nodes, index).any(|child| nodes[child].node.floating.is_some()) {
+        return false;
+    }
+    if frame_children_all_fixed(nodes, index) {
+        return frame_child_indices(nodes, index)
+            .all(|child| can_layout_plain_frame_fast(nodes, child, hashes));
+    }
+    nodes[index].child_count <= 1
+        && frame_child_indices(nodes, index)
+            .all(|child| can_layout_plain_frame_fast(nodes, child, hashes))
+}
+
+fn frame_children_all_fixed(nodes: &[FrameNode], index: usize) -> bool {
+    frame_child_indices(nodes, index).all(|child| {
+        matches!(nodes[child].node.layout.sizing.width, AxisSize::Fixed(_))
+            && matches!(nodes[child].node.layout.sizing.height, AxisSize::Fixed(_))
+            && nodes[child].node.floating.is_none()
+    })
+}
+
+fn frame_child_indices(nodes: &[FrameNode], index: usize) -> impl Iterator<Item = usize> + '_ {
+    std::iter::successors(nodes[index].first_child, move |child| {
+        nodes[*child].next_sibling
+    })
+}
+
+fn count_nodes(node: &Node) -> usize {
+    1 + node.children.iter().map(count_nodes).sum::<usize>()
+}
+
+fn fixed_node_size(node: &Node) -> Size {
+    let AxisSize::Fixed(width) = node.layout.sizing.width else {
+        unreachable!("fixed flow fast path requires fixed width");
+    };
+    let AxisSize::Fixed(height) = node.layout.sizing.height else {
+        unreachable!("fixed flow fast path requires fixed height");
+    };
+    Size::new(width, height)
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1,4 +1,4 @@
-use crate::geometry::Vector;
+use crate::geometry::{Rect, Size, Vector};
 use crate::input::{InputState, PointerGesture, PointerId, TouchPhase};
 use crate::result::{LayoutResult, ScrollData};
 use std::collections::HashMap;
@@ -74,6 +74,52 @@ impl ScrollState {
         self.update_offsets_from_input(input, result, false);
         self.update_momentum(input, result);
         self.wheel_scroll_ended = false;
+    }
+
+    pub(crate) fn needs_animation_frame(&self) -> bool {
+        !self.momentum.is_empty()
+    }
+
+    pub(crate) fn clamp_offset_to_content(
+        &mut self,
+        id: &str,
+        offset: Vector,
+        scroll_x: bool,
+        scroll_y: bool,
+        bounds: Rect,
+        content_size: Size,
+    ) -> Vector {
+        if self.query_offset.is_some()
+            || self.wheel_scrolling
+            || self.momentum.contains_key(id)
+            || self
+                .active_pointers
+                .values()
+                .any(|active| active.scroll_id == id)
+        {
+            return offset;
+        }
+
+        let limit = Vector::new(
+            (content_size.width - bounds.width).max(0.0),
+            (content_size.height - bounds.height).max(0.0),
+        );
+        let clamped = Vector::new(
+            if scroll_x {
+                offset.x.min(limit.x)
+            } else {
+                offset.x
+            },
+            if scroll_y {
+                offset.y.min(limit.y)
+            } else {
+                offset.y
+            },
+        );
+        if clamped != offset {
+            self.offsets.insert(id.to_owned(), clamped);
+        }
+        clamped
     }
 
     #[allow(clippy::too_many_lines)]

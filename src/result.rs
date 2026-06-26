@@ -104,6 +104,8 @@ pub struct LayoutResult {
     pub pointers: Vec<PointerHit>,
     /// Recoverable layout errors collected during the pass.
     pub errors: Vec<LayoutError>,
+    /// Whether frame-to-frame state is still animating and needs another layout/render frame.
+    pub needs_animation_frame: bool,
     pub(crate) hit_order: Vec<HitEntry>,
 }
 

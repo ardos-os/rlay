@@ -232,6 +232,8 @@ pub struct TextStyle {
     pub wrap: TextWrap,
     /// Per-line horizontal alignment.
     pub align: TextAlign,
+    /// Behavior when rendered text exceeds its text node bounds.
+    pub text_overflow: TextOverflowMode,
 }
 
 /// Text wrapping policy.
@@ -258,6 +260,18 @@ pub enum TextAlign {
     Right,
 }
 
+/// Text overflow behavior inside the text node bounds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum TextOverflowMode {
+    /// Render the full text even when it exceeds the text node bounds.
+    #[default]
+    Visible,
+    /// Replace the end of overflowing text with `...`.
+    Ellipsis,
+    /// Keep the text string but clamp the render command bounds to the text node.
+    Cut,
+}
+
 impl Default for TextStyle {
     fn default() -> Self {
         Self {
@@ -268,6 +282,7 @@ impl Default for TextStyle {
             letter_spacing: 0.0,
             wrap: TextWrap::Words,
             align: TextAlign::Left,
+            text_overflow: TextOverflowMode::Visible,
         }
     }
 }

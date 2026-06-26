@@ -1,4 +1,5 @@
 use crate::*;
+use std::{cell::Cell, rc::Rc};
 
 fn assert_close(left: f32, right: f32) {
     assert!((left - right).abs() <= f32::EPSILON);
@@ -54,6 +55,78 @@ fn text_uses_measure_callback_for_fit_size() {
 
     assert_close(result.elements["text"].bounds.width, 48.0);
     assert_close(result.elements["text"].bounds.height, 16.0);
+}
+
+#[test]
+fn idle_transitions_do_not_run_a_second_layout_pass() {
+    fn measure_calls_for(root: &Node) -> usize {
+        let calls = Rc::new(Cell::new(0));
+        let calls_for_measure = Rc::clone(&calls);
+        let mut engine = Engine::new(move |text, style| {
+            calls_for_measure.set(calls_for_measure.get() + 1);
+            Size::new(
+                text.chars().count() as f32 * style.font_size,
+                style.font_size,
+            )
+        });
+        engine.set_max_measure_text_cache_entries(Some(0));
+
+        engine.layout(root, Size::new(300.0, 40.0), 0.0);
+
+        calls.get()
+    }
+
+    let plain = Node::new().child(
+        Node::new()
+            .id("card")
+            .child(Node::text("abc", TextStyle::default()).id("text")),
+    );
+    let with_idle_transition = Node::new().child(
+        Node::new()
+            .id("card")
+            .transition(Transition::ease_out(0.2, TransitionProperties::POSITION))
+            .child(Node::text("abc", TextStyle::default()).id("text")),
+    );
+
+    assert_eq!(
+        measure_calls_for(&with_idle_transition),
+        measure_calls_for(&plain)
+    );
+}
+
+#[test]
+fn active_transition_requests_animation_frame() {
+    let mut engine = engine();
+    let root = Node::new().child(
+        Node::new()
+            .id("panel")
+            .transition(Transition::ease_out(1.0, TransitionProperties::WIDTH))
+            .layout(Layout {
+                sizing: Sizing::fixed(10.0, 10.0),
+                ..Layout::default()
+            }),
+    );
+    assert!(!engine.layout(&root, Size::new(100.0, 100.0), 0.0).needs_animation_frame);
+
+    let root = Node::new().child(
+        Node::new()
+            .id("panel")
+            .transition(Transition::ease_out(1.0, TransitionProperties::WIDTH))
+            .layout(Layout {
+                sizing: Sizing::fixed(20.0, 10.0),
+                ..Layout::default()
+            }),
+    );
+    assert!(engine.layout(&root, Size::new(100.0, 100.0), 0.0).needs_animation_frame);
+}
+
+#[test]
+fn static_layout_does_not_request_animation_frame() {
+    let root = Node::new().child(Node::new().id("panel").layout(Layout {
+        sizing: Sizing::fixed(10.0, 10.0),
+        ..Layout::default()
+    }));
+    assert!(!engine().layout(&root, Size::new(100.0, 100.0), 0.0).needs_animation_frame);
 }
 
 #[test]

@@ -1,6 +1,6 @@
 use rlay::{
     AlignY, AxisSize, Color, CommandKind, Direction, Engine, Layout, Node, Padding, Point, Radius,
-    Rect, RenderCommand, Size, Sizing, TextStyle,
+    Rect, RenderCommand, Size, Sizing, TextOverflowMode, TextStyle, TextWrap,
 };
 
 fn engine() -> Engine {
@@ -116,6 +116,90 @@ fn emits_clip_start_and_end_around_children() {
         result.commands.last().unwrap().kind,
         CommandKind::ClipEnd
     ));
+}
+
+#[test]
+fn text_overflow_visible_keeps_full_text_bounds() {
+    let style = TextStyle {
+        font_size: 10.0,
+        wrap: TextWrap::None,
+        text_overflow: TextOverflowMode::Visible,
+        ..TextStyle::default()
+    };
+    let root = Node::text("abcdef", style.clone()).id("text").layout(Layout {
+        sizing: Sizing::fixed(25.0, 10.0),
+        ..Layout::default()
+    });
+
+    let result = engine().layout(&root, Size::new(25.0, 10.0), 0.0);
+
+    assert_eq!(
+        result.commands[0],
+        RenderCommand {
+            id: Some("text".into()),
+            bounds: Rect::new(0.0, 0.0, 30.0, 10.0),
+            kind: CommandKind::Text {
+                text: "abcdef".into(),
+                style,
+            },
+        }
+    );
+}
+
+#[test]
+fn text_overflow_cut_clamps_text_bounds() {
+    let style = TextStyle {
+        font_size: 10.0,
+        wrap: TextWrap::None,
+        text_overflow: TextOverflowMode::Cut,
+        ..TextStyle::default()
+    };
+    let root = Node::text("abcdef", style.clone()).id("text").layout(Layout {
+        sizing: Sizing::fixed(25.0, 10.0),
+        ..Layout::default()
+    });
+
+    let result = engine().layout(&root, Size::new(25.0, 10.0), 0.0);
+
+    assert_eq!(
+        result.commands[0],
+        RenderCommand {
+            id: Some("text".into()),
+            bounds: Rect::new(0.0, 0.0, 25.0, 10.0),
+            kind: CommandKind::Text {
+                text: "abcdef".into(),
+                style,
+            },
+        }
+    );
+}
+
+#[test]
+fn text_overflow_ellipsis_replaces_fitting_suffix() {
+    let style = TextStyle {
+        font_size: 10.0,
+        wrap: TextWrap::None,
+        text_overflow: TextOverflowMode::Ellipsis,
+        ..TextStyle::default()
+    };
+    let root = Node::text("abcdef", style.clone()).id("text").layout(Layout {
+        sizing: Sizing::fixed(25.0, 10.0),
+        ..Layout::default()
+    });
+
+    let result = engine().layout(&root, Size::new(25.0, 10.0), 0.0);
+
+    assert_eq!(
+        result.commands[0],
+        RenderCommand {
+            id: Some("text".into()),
+            bounds: Rect::new(0.0, 0.0, 25.0, 10.0),
+            kind: CommandKind::Text {
+                text: "ab...".into(),
+                style,
+            },
+        }
+    );
 }
 
 #[test]

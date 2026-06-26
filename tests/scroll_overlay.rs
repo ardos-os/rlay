@@ -81,6 +81,42 @@ fn scroll_container_content_size_includes_padding() {
 }
 
 #[test]
+fn scroll_offset_clamps_when_content_shrinks() {
+    fn list(row_count: usize) -> Node {
+        let mut root = Node::new().id("list").scroll(false, true).layout(Layout {
+            direction: Direction::Column,
+            ..Layout::default()
+        });
+        for index in 0..row_count {
+            root = root.child(Node::new().id(format!("row-{index}")).layout(Layout {
+                sizing: Sizing::fixed(100.0, 40.0),
+                ..Layout::default()
+            }));
+        }
+        root
+    }
+
+    let mut engine = engine();
+    engine.set_scroll_offset("list", Vector::new(0.0, 110.0));
+    let tall = engine.layout(&list(4), Size::new(100.0, 50.0), 0.0);
+    let short = engine.layout(&list(2), Size::new(100.0, 50.0), 0.0);
+
+    assert_eq!(
+        tall.scroll_container("list").unwrap().offset,
+        Vector::new(0.0, 110.0)
+    );
+    assert_eq!(
+        short.scroll_container("list").unwrap().offset,
+        Vector::new(0.0, 30.0)
+    );
+    assert_eq!(
+        short.element("row-0").unwrap().bounds,
+        Rect::new(0.0, -30.0, 100.0, 40.0)
+    );
+    assert_eq!(engine.scroll_offset("list"), Vector::new(0.0, 30.0));
+}
+
+#[test]
 fn culling_skips_offscreen_commands_but_keeps_element_data() {
     let root = Node::new()
         .layout(Layout {
